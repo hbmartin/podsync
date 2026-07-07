@@ -166,6 +166,33 @@ data_dir = "/data"
 	})
 }
 
+func TestEnrichmentValidationIncludesConfigSection(t *testing.T) {
+	const file = `
+	[server]
+	data_dir = "/data"
+
+	[feeds]
+	  [feeds.A]
+	  url = "https://youtube.com/watch?v=ygIUF678y40"
+	  [feeds.A.transcripts]
+	    [[feeds.A.transcripts.stt]]
+	    type = "openai"
+	    model = "whisper-1"
+
+	  [feeds.B]
+	  url = "https://youtube.com/watch?v=ygIUF678y40"
+	  [feeds.B.chapters]
+	    image_max_width = -1
+	`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid feeds.A.transcripts stt provider 1")
+	assert.Contains(t, err.Error(), "feeds.B.chapters image_max_width must be positive")
+}
+
 func TestLoadEmptyKeyList(t *testing.T) {
 	const file = `
 [tokens]

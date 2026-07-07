@@ -81,6 +81,7 @@ type Feed struct {
 	ItemID          string     `json:"item_id"`
 	LinkType        Type       `json:"link_type"` // Either group, channel or user
 	Provider        Provider   `json:"provider"`  // Youtube or Vimeo
+	PodcastGUID     string     `json:"podcast_guid,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	LastAccess      time.Time  `json:"last_access"`
 	ExpirationTime  time.Time  `json:"expiration_time"`

@@ -361,6 +361,9 @@ func runSetup(configPath string, stdin io.Reader, stdout io.Writer) error {
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return errors.Wrapf(err, "failed to write %s", configPath)
 	}
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		return errors.Wrapf(err, "failed to restrict permissions on %s", configPath)
+	}
 
 	fmt.Fprintf(p.w, "\nWrote %s.\n", configPath)
 	if answers.HasVimeo() || answers.HasTwitch() {

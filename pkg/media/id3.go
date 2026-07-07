@@ -43,7 +43,11 @@ func EmbedID3Chapters(path string, chapters []Chapter) error {
 		})
 	}
 
-	tag.AddFrame("CTOC", id3v2.UnknownFrame{Body: ctocBody("toc", elementIDs)})
+	ctoc, err := ctocBody("toc", elementIDs)
+	if err != nil {
+		return err
+	}
+	tag.AddFrame("CTOC", id3v2.UnknownFrame{Body: ctoc})
 
 	if err := tag.Save(); err != nil {
 		return errors.Wrap(err, "failed to save id3 chapter frames")
@@ -54,7 +58,11 @@ func EmbedID3Chapters(path string, chapters []Chapter) error {
 // ctocBody encodes an ID3v2 CTOC frame body: a top-level, ordered table of
 // contents listing the CHAP element IDs.
 // Layout per id3v2-chapters-1.0: elementID NUL flags entryCount childID NUL...
-func ctocBody(elementID string, childIDs []string) []byte {
+func ctocBody(elementID string, childIDs []string) ([]byte, error) {
+	if len(childIDs) > 255 {
+		return nil, errors.Errorf("id3 chapter table of contents supports at most 255 chapters, got %d", len(childIDs))
+	}
+
 	var buf bytes.Buffer
 	buf.WriteString(elementID)
 	buf.WriteByte(0)
@@ -64,5 +72,5 @@ func ctocBody(elementID string, childIDs []string) []byte {
 		buf.WriteString(id)
 		buf.WriteByte(0)
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }

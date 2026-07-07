@@ -130,6 +130,43 @@ func TestResolveHandleCached(t *testing.T) {
 	require.Len(t, transport.requests, 1, "cached lookups must not hit the API")
 }
 
+func TestResolveHandleUsesSharedCacheWhenHandlesNil(t *testing.T) {
+	const channelsPath = "/youtube/v3/channels"
+
+	transport := &MockTransport{
+		responses: map[string]string{channelsPath: `{"items": [{"id": "UC_shared_cache"}]}`},
+	}
+	yt := newTestYouTubeBuilder(t, transport)
+	yt.handles = nil
+
+	channelID, err := yt.resolveHandle(context.Background(), "sharedhandle")
+	require.NoError(t, err)
+	require.Equal(t, "UC_shared_cache", channelID)
+
+	cachedID, ok := sharedHandleCache.get("sharedhandle")
+	require.True(t, ok)
+	require.Equal(t, channelID, cachedID)
+}
+
+func TestKeepLastPlaylistSnippetsCopiesBackingArray(t *testing.T) {
+	snippets := []*youtube.PlaylistItemSnippet{
+		{Title: "one"},
+		{Title: "two"},
+		{Title: "three"},
+		{Title: "four"},
+	}
+
+	kept := keepLastPlaylistSnippets(snippets, 2)
+
+	require.Len(t, kept, 2)
+	require.Equal(t, 2, cap(kept))
+	require.Equal(t, "three", kept[0].Title)
+	require.Equal(t, "four", kept[1].Title)
+
+	snippets[2] = &youtube.PlaylistItemSnippet{Title: "replaced"}
+	require.Equal(t, "three", kept[0].Title)
+}
+
 func TestParseURLWithHandles(t *testing.T) {
 	tests := []struct {
 		name     string

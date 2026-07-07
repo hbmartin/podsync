@@ -34,14 +34,14 @@ func newCommand(cfg *feed.STTProviderConfig) (Provider, error) {
 
 func (p *command) Name() string { return "command" }
 
-func (p *command) Transcribe(_ context.Context, mediaPath, lang, outPath string) error {
+func (p *command) Transcribe(ctx context.Context, mediaPath, lang, outPath string) error {
 	env := []string{
 		"PODSYNC_AUDIO_FILE=" + mediaPath,
 		"PODSYNC_TRANSCRIPT_OUTPUT=" + outPath,
 		"PODSYNC_LANGUAGE=" + lang,
 	}
 
-	if err := p.hook.Invoke(env); err != nil {
+	if err := p.hook.Invoke(ctx, env); err != nil {
 		return err
 	}
 

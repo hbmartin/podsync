@@ -134,6 +134,7 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 	log.Debugf("received %d episode(s) for %q", len(result.Episodes), result.Title)
 
 	episodeSet := make(map[string]struct{})
+	u.ensurePodcastGUID(ctx, feedConfig.ID, result)
 	if err := u.db.WalkEpisodes(ctx, feedConfig.ID, func(episode *model.Episode) error {
 		if episode.Status != model.EpisodeDownloaded && episode.Status != model.EpisodeCleaned {
 			episodeSet[episode.ID] = struct{}{}
@@ -162,6 +163,23 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 
 	log.Debug("successfully saved updates to storage")
 	return nil
+}
+
+func (u *Manager) ensurePodcastGUID(ctx context.Context, feedID string, result *model.Feed) {
+	if result.PodcastGUID != "" {
+		return
+	}
+
+	existing, err := u.db.GetFeed(ctx, feedID)
+	if err == nil && existing.PodcastGUID != "" {
+		result.PodcastGUID = existing.PodcastGUID
+		return
+	}
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
+		log.WithError(err).Warn("failed to load existing feed guid")
+	}
+
+	result.PodcastGUID = feed.PodcastGUID(u.hostname, feedID)
 }
 
 func (u *Manager) fetchEpisodes(ctx context.Context, feedConfig *feed.Config) ([]*model.Episode, error) {
@@ -275,7 +293,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 				}
 
 				for i, hook := range feedConfig.OnEpisodeDownloadError {
-					if hookErr := hook.Invoke(env); hookErr != nil {
+					if hookErr := hook.Invoke(ctx, env); hookErr != nil {
 						logger.Errorf("failed to execute episode download error hook %d: %v", i+1, hookErr)
 					} else {
 						logger.Infof("episode download error hook %d executed successfully", i+1)
@@ -336,7 +354,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			}
 
 			for i, hook := range feedConfig.PostEpisodeDownload {
-				if err := hook.Invoke(env); err != nil {
+				if err := hook.Invoke(ctx, env); err != nil {
 					logger.Errorf("failed to execute post episode download hook %d: %v", i+1, err)
 				} else {
 					logger.Infof("post episode download hook %d executed successfully", i+1)

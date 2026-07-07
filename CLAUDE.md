@@ -228,8 +228,6 @@ key_file_path = "/path/to/key.pem"
 debug_endpoints = false                # Enable /debug/vars metrics
 no_index = false                       # Block search engine indexing (serves robots.txt and X-Robots-Tag header)
 no_listing = false                     # Disable directory listings, return 404 for folder access
-search = false                         # Enable /search endpoint + web UI search box
-search_use_api = false                 # Allow quota-expensive keyword search via YouTube search.list (100 units/call)
 ```
 
 ### Storage Configuration
@@ -363,24 +361,9 @@ All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`add
 - `/{path}/{feed_id}/{episode_name}` - Episode file download
 - `/{path}/podsync.opml` - OPML export (feeds with `opml = true`)
 - `/{path}/index.html` - Web UI (if enabled, local storage only)
-- `/search?q=...` - Channel/playlist discovery (if `search = true`; also registered at `/{path}/search`)
 - `/health` - Health check (returns 503 if episodes failed in last 24h)
 - `/debug/vars` - Runtime metrics (if `debug_endpoints = true`)
 - `/robots.txt` - Search engine blocking (if `no_index = true`)
-
-### Channel/Playlist Search (`services/web/search.go`)
-
-- Enabled with `server.search = true`; returns JSON with the resolved provider, type, ID, title, thumbnail,
-  canonical URL, a suggested `feed_id`, and the feed URL Podsync would serve for it
-- Read-only discovery (v1): results still have to be added to `config.toml` manually (no dynamic feeds)
-- Query classification: `@handle` and channel/user/playlist URLs are resolved directly via the YouTube Data API
-  (`YouTubeSearcher.Resolve` in `pkg/builder/search.go`, 3-5 units, handles via `channels.list` `forHandle`);
-  anything else falls back to keyword search (`search.list`, 100 units/call), which must be explicitly
-  enabled with `server.search_use_api = true`
-- Results are cached in memory for 24 hours (256 entries, FIFO eviction) to protect API quota
-- Requires a YouTube API key; without one, URL/handle queries return parsed IDs without metadata
-- Non-YouTube URLs (Vimeo/SoundCloud/Twitch) are parsed and returned without metadata enrichment
-- The web UI (`html/index.html`) includes a search box that calls this endpoint via a relative URL
 
 ## Storage Behavior
 

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jessevdk/go-flags"
-	"github.com/mxpv/podsync/pkg/builder"
 	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
@@ -284,20 +283,7 @@ func main() {
 	}
 
 	// Run web server
-	var searcher web.Searcher
-	if cfg.Server.SearchEnabled {
-		if provider, ok := keys[model.ProviderYoutube]; ok {
-			youtubeSearcher, err := builder.NewYouTubeSearcher(provider)
-			if err != nil {
-				log.WithError(err).Fatal("failed to create youtube searcher")
-			}
-			searcher = youtubeSearcher
-		} else {
-			log.Warn("search is enabled, but no YouTube API key is configured; only URL parsing will be available")
-		}
-	}
-
-	srv := web.New(cfg.Server, storage, database, searcher)
+	srv := web.New(cfg.Server, storage, database)
 
 	group.Go(func() error {
 		log.Infof("running listener at %s", srv.Addr)

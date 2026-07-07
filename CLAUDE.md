@@ -402,6 +402,12 @@ make docker                           # Build local Docker image
 docker run -it --rm localhost/podsync:latest
 ```
 
+### macOS launchd (background service)
+A sample launchd LaunchAgent that runs Podsync in headless mode on a schedule lives at
+`init/launchd/com.github.mxpv.podsync.plist`, with a setup guide in
+`docs/how_to_run_podsync_on_macos_launchd.md`. Headless mode runs one update round and exits,
+so launchd re-runs it via `StartInterval`.
+
 ### Development Debugging
 Use VS Code with the Go extension. The repository includes `.vscode/launch.json` with a "Debug Podsync" configuration that runs with `config.toml`.
 

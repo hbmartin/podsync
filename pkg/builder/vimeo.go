@@ -111,10 +111,7 @@ func (v *VimeoBuilder) getVideoSize(video *vimeo.Video) int64 {
 type getVideosFunc func(string, ...vimeo.CallOption) ([]*vimeo.Video, *vimeo.Response, error)
 
 func (v *VimeoBuilder) queryVideos(getVideos getVideosFunc, feed *model.Feed) error {
-	var (
-		page  = 1
-		added = 0
-	)
+	page := 1
 
 	for {
 		videos, response, err := getVideos(feed.ItemID, vimeo.OptPage(page), vimeo.OptPerPage(vimeoDefaultPageSize))
@@ -126,6 +123,7 @@ func (v *VimeoBuilder) queryVideos(getVideos getVideosFunc, feed *model.Feed) er
 			return err
 		}
 
+		full := false
 		for _, video := range videos {
 			var (
 				videoID  = strconv.Itoa(video.GetID())
@@ -135,7 +133,7 @@ func (v *VimeoBuilder) queryVideos(getVideos getVideosFunc, feed *model.Feed) er
 				image    = v.selectImage(video.Pictures, feed.Quality)
 			)
 
-			feed.Episodes = append(feed.Episodes, &model.Episode{
+			full = addEpisode(feed, &model.Episode{
 				ID:          videoID,
 				Title:       video.Name,
 				Description: video.Description,
@@ -146,11 +144,9 @@ func (v *VimeoBuilder) queryVideos(getVideos getVideosFunc, feed *model.Feed) er
 				VideoURL:    videoURL,
 				Status:      model.EpisodeNew,
 			})
-
-			added++
 		}
 
-		if added >= feed.PageSize || response.NextPage == "" {
+		if full || response.NextPage == "" {
 			return nil
 		}
 
@@ -164,15 +160,7 @@ func (v *VimeoBuilder) Build(ctx context.Context, cfg *feed.Config) (*model.Feed
 		return nil, err
 	}
 
-	_feed := &model.Feed{
-		ItemID:    info.ItemID,
-		Provider:  info.Provider,
-		LinkType:  info.LinkType,
-		Format:    cfg.Format,
-		Quality:   cfg.Quality,
-		PageSize:  cfg.PageSize,
-		UpdatedAt: time.Now().UTC(),
-	}
+	_feed := newFeed(cfg, info)
 
 	if info.LinkType == model.TypeChannel {
 		if err := v.queryChannel(_feed); err != nil {

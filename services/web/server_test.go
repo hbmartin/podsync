@@ -25,7 +25,7 @@ func TestDebugEndpointDisabledByDefault(t *testing.T) {
 		Path: "feeds",
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
 	rec := httptest.NewRecorder()
@@ -45,7 +45,7 @@ func TestDebugEndpointEnabledWhenConfigured(t *testing.T) {
 		DebugEndpoints: true,
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
 	rec := httptest.NewRecorder()
@@ -65,7 +65,7 @@ func TestNoIndexDisabledByDefault(t *testing.T) {
 		Path: "feeds",
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	// robots.txt should return 404 when disabled
 	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
@@ -87,7 +87,7 @@ func TestNoIndexEnabledWhenConfigured(t *testing.T) {
 		NoIndex: true,
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	// robots.txt should return disallow all
 	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
@@ -121,7 +121,7 @@ func TestNoListingDisabledByDefault(t *testing.T) {
 		Path: "",
 	}
 
-	srv := New(cfg, storage, nil)
+	srv := New(cfg, storage, nil, nil)
 
 	// Accessing a directory should return 200 with directory listing
 	req := httptest.NewRequest(http.MethodGet, "/feeds/", nil)
@@ -160,7 +160,7 @@ func TestNoListingEnabledWhenConfigured(t *testing.T) {
 		Path: "",
 	}
 
-	srv := New(cfg, storage, nil)
+	srv := New(cfg, storage, nil, nil)
 
 	// Accessing a directory should return 404
 	req := httptest.NewRequest(http.MethodGet, "/feeds/", nil)

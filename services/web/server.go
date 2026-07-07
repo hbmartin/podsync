@@ -46,9 +46,14 @@ type Config struct {
 	NoIndex bool `toml:"no_index"`
 	// NoListing returns 404 for directory listings, only serving actual files (disabled by default)
 	NoListing bool `toml:"no_listing"`
+	// SearchEnabled enables the /search endpoint and the web UI search box (disabled by default)
+	SearchEnabled bool `toml:"search"`
+	// SearchUseAPI allows quota-expensive keyword search via YouTube Data API search.list,
+	// which costs 100 units per call (disabled by default)
+	SearchUseAPI bool `toml:"search_use_api"`
 }
 
-func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
+func New(cfg Config, storage http.FileSystem, database db.Storage, searcher Searcher) *Server {
 	port := cfg.Port
 	if port == 0 {
 		port = 8080
@@ -77,6 +82,16 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 
 	// Add health check endpoint
 	mux.HandleFunc("/health", srv.healthCheckHandler)
+
+	// Optionally enable channel/playlist search endpoint (disabled by default)
+	if cfg.SearchEnabled {
+		search := newSearchService(searcher, cfg.Hostname, cfg.SearchUseAPI)
+		mux.HandleFunc("/search", search.handler)
+		if cfg.Path != "" {
+			mux.HandleFunc(fmt.Sprintf("/%s/search", cfg.Path), search.handler)
+		}
+		log.Info("search endpoint enabled at /search")
+	}
 
 	// Optionally enable debug endpoints (disabled by default for security)
 	if cfg.DebugEndpoints {

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sample macOS launchd LaunchAgent for Podsync in headless mode.
+
+  Headless mode (the "headless" flag) runs a single round of feed updates and
+  then exits, so launchd re-runs it on a schedule (StartInterval below) rather
+  than keeping a long-lived process alive.
+
+  Setup:
+    1. Replace every /ABSOLUTE/PATH/... placeholder below with real absolute
+       paths. launchd does NOT expand `~`, `$HOME`, or other variables inside
+       these string values, so full paths are required.
+    2. Copy this file to ~/Library/LaunchAgents/com.github.mxpv.podsync.plist
+    3. Load it:  launchctl load ~/Library/LaunchAgents/com.github.mxpv.podsync.plist
+
+  See docs/how_to_run_podsync_on_macos_launchd.md for the full guide.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.mxpv.podsync</string>
+
+    <!-- Binary + arguments. Point to your built ./bin/podsync and config.toml. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABSOLUTE/PATH/TO/podsync</string>
+        <string>--config</string>
+        <string>/ABSOLUTE/PATH/TO/config.toml</string>
+        <string>--headless</string>
+        <string>--no-banner</string>
+    </array>
+
+    <!--
+      launchd starts jobs with a minimal PATH that does NOT include Homebrew.
+      Podsync shells out to `yt-dlp` and `ffmpeg`, so add their locations here.
+      /opt/homebrew/bin = Apple Silicon brew, /usr/local/bin = Intel brew.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- A user-writable directory. Relative paths in config.toml resolve here. -->
+    <key>WorkingDirectory</key>
+    <string>/ABSOLUTE/PATH/TO/podsync-workdir</string>
+
+    <!-- Run once immediately when the agent is loaded... -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- ...then every 6 hours (21600s), matching the default update_period. -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <!-- Capture stdout/stderr for troubleshooting. -->
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/podsync-workdir/podsync.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/podsync-workdir/podsync.err.log</string>
+</dict>
+</plist>

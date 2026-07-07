@@ -50,6 +50,7 @@ brew install yt-dlp ffmpeg go
 - [How to get YouTube API Key](./docs/how_to_get_youtube_api_key.md)
 - [Podsync on QNAP NAS Guide](./docs/how_to_setup_podsync_on_qnap_nas.md)
 - [Schedule updates with cron](./docs/cron.md)
+- [Run on macOS with launchd](./docs/how_to_run_podsync_on_macos_launchd.md)
 
 ## 🌙 Nightly builds
 
@@ -150,6 +151,13 @@ Note: when `storage.type = "s3"`, only dry-run mode is supported currently. Non-
 
 Use the editor [Visual Studio Code](https://code.visualstudio.com/) and install the official [Go](https://marketplace.visualstudio.com/items?itemName=golang.go) extension. Afterwards you can execute "Run & Debug" ▶︎ "Debug Podsync" to debug the application. The required configuration is already prepared (see `.vscode/launch.json`).
 
+
+### 🍎 Run as a background service on macOS (launchd):
+
+To have Podsync refresh your feeds automatically in the background, use the sample
+launchd LaunchAgent at [`init/launchd/com.github.mxpv.podsync.plist`](./init/launchd/com.github.mxpv.podsync.plist).
+It runs Podsync in headless mode (`--headless`) on a schedule. See the
+[macOS launchd guide](./docs/how_to_run_podsync_on_macos_launchd.md) for setup steps.
 
 ### 🐳 Run via Docker:
 

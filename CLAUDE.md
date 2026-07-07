@@ -395,9 +395,9 @@ All sidecars are flat files next to the media, named from the episode base name 
 
 The web server serves them like any other file (`.vtt` MIME type registered in `services/web/server.go`). Image URLs inside chapters JSON are absolute and baked at download time — a hostname change leaves them stale.
 
-## RSS Generation and Podcasting 2.0 (pkg/rss)
+## RSS Generation and Podcasting 2.0
 
-`pkg/rss` is an in-tree fork of `eduncan911/podcast` v1.4.2 (MIT, LICENSE kept) — the upstream library's closed structs cannot emit `podcast:*` namespace tags. A parity test (`pkg/rss/rss_test.go` `TestUpstreamParity`) guarantees output is byte-identical to upstream except for the added `xmlns:podcast` declaration; keep it passing when touching the fork.
+RSS feeds are generated with `github.com/hbmartin/podcast-rss-generator/v2`; there is no in-tree RSS library fork. Use the package helpers (`SetPodcastGUID`, `SetMedium`, `SetLocked`, `AddTranscript`, `AddChapters`, `AddSocialInteract`) when touching `pkg/feed/xml.go` so derived iTunes and Podcasting 2.0 fields stay consistent with the dependency API.
 
 Emitted Podcasting 2.0 tags (`pkg/feed/xml.go` `Build`):
 - Channel: `podcast:guid` (spec UUIDv5 of `{hostname}/{feedID}.xml`, test vectors in `TestGUID`), `podcast:medium` (`video`/`podcast`), `podcast:locked` (see `custom.locked`), `podcast:person` (channel author as host)
@@ -571,7 +571,7 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - youtube-dl wrapper: `pkg/ytdl/ytdl.go` (Download/FetchVideo/buildArgs), `pkg/ytdl/download_result.go` (DownloadResult, sidecar discovery)
 - Hooks: `pkg/feed/hooks.go`
 - API key rotation: `pkg/feed/key.go`
-- RSS library fork (iTunes + Podcasting 2.0): `pkg/rss/` (`pc20.go` for podcast: namespace types)
+- RSS generation library: `github.com/hbmartin/podcast-rss-generator/v2` used from `pkg/feed/xml.go`
 - Enrichment orchestrator: `pkg/enrich/enrich.go` (transcript/chapter chains), `pkg/enrich/naming.go` (sidecar names)
 - Built-in converters/parsers: `pkg/enrich/vtt.go` (VTT→PodcastIndex JSON), `pkg/enrich/chapters.go` (info.json/description/flexible chapter parsing)
 - STT fallback chain: `pkg/enrich/stt/` (openai.go, whispercpp.go, command.go)

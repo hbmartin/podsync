@@ -106,7 +106,7 @@ max_height = 720                       # Maximum video height (720, 1080, 1440, 
 playlist_sort = "desc"                 # "asc" or "desc" for playlist ordering
 filename_template = "{{id}}"           # Tokens: {{id}}, {{title}}, {{pub_date}}, {{feed_id}}
 opml = true                            # Include in OPML export
-private_feed = false                   # Don't index by podcast aggregators
+private_feed = false                   # Don't index by podcast aggregators (all providers)
 youtube_dl_args = ["--arg1", "val"]    # Additional youtube-dl arguments
 
 [feeds.my_feed.custom_format]          # When format = "custom"
@@ -261,13 +261,15 @@ debug = false
 
 ## Platform-Specific Behaviors
 
+All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`addEpisode`), so cross-provider config fields (`private_feed`, `custom.cover_art_quality`, `playlist_sort`) are stored on every feed. Note: `custom.cover_art_quality` and `playlist_sort` currently only affect YouTube's behavior; `private_feed` emits `<itunes:block>` for all providers.
+
 ### YouTube (`pkg/builder/youtube.go`)
 - **Supported**: Channels, Users, Handles (@username), Playlists
 - **Not Supported**: Live streams and Premiered videos (automatically skipped)
-- API costs: Channel/User 5 units, Handle 105 units (requires extra lookup), Playlist 3 units/request
+- API costs: Channel/User 5 units, Handle ~6 units on first lookup (`channels.list` `forHandle`, then handle→channel ID is cached in memory for the process lifetime, so 5 units thereafter), Playlist 3 units/request
 - Thumbnail quality: uses maxres > high > medium > default
 - Size estimation based on duration and quality (not actual file size)
-- Supports playlist_sort for ordering
+- Supports playlist_sort for ordering; `playlist_sort = "desc"` inherently walks the entire playlist (3 units per 50-item page) because the YouTube API has no reverse pagination — memory is bounded, but API cost grows with playlist length
 
 ### Vimeo (`pkg/builder/vimeo.go`)
 - **Supported**: Channels, Groups, Users
@@ -388,6 +390,7 @@ goimports -w .      # Organize imports and format
 
 ### Running
 ```bash
+./bin/podsync setup                     # Interactively generate config.toml and exit
 ./bin/podsync --config config.toml      # Run with config file
 ./bin/podsync --debug                   # Run with debug logging
 ./bin/podsync --headless                # Run once and exit (no web server)
@@ -395,6 +398,15 @@ goimports -w .      # Organize imports and format
 ./bin/podsync --migrate-filenames       # Migrate files to current filename_template and exit
 ./bin/podsync --migrate-filenames-dry-run --migrate-filenames  # Preview migration without changes
 ```
+
+### Interactive Setup (`cmd/podsync/setup.go`)
+`podsync setup` walks new users through generating a `config.toml`:
+- Prompts for feed URL(s) (validated with `builder.ParseURL`, re-prompts on invalid input), feed ID, format (video/audio), and quality (high/low), looping for multiple feeds
+- Prompts for storage directory, HTTP port, and hostname
+- Prompts for a YouTube API key only when a YouTube feed was added (can be left empty and set later via `PODSYNC_YOUTUBE_API_KEY`); Vimeo/Twitch feeds get commented `[tokens]` placeholders with doc links
+- Writes to the path given by `-c/--config` (default `config.toml`) with mode `0600` (the file may contain an API key); refuses to overwrite an existing file without confirmation
+- The generated TOML is self-checked by parsing it back before writing
+- All other options use defaults documented in `config.toml.example` (referenced in the generated file's header)
 
 ### Docker
 ```bash
@@ -467,6 +479,7 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 ## Key File References
 
 - Main entry: `cmd/podsync/main.go`
+- Interactive setup: `cmd/podsync/setup.go`
 - Config loading: `cmd/podsync/config.go`
 - Feed update: `services/update/updater.go` (episode lifecycle, cleanup)
 - Episode filtering: `services/update/matcher.go`
@@ -476,6 +489,7 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - Filename migration: `services/migrate/migrate.go`
 - Web server: `services/web/server.go`
 - YouTube builder: `pkg/builder/youtube.go`
+- Shared builder helpers: `pkg/builder/common.go` (feed construction, episode page-size cutoff)
 - Vimeo builder: `pkg/builder/vimeo.go`
 - SoundCloud builder: `pkg/builder/soundcloud.go`
 - Twitch builder: `pkg/builder/twitch.go`

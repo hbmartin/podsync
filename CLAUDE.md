@@ -47,14 +47,26 @@ Understanding how episodes flow through the system:
 - Episodes are filtered by match rules (title, description, duration, age) in `services/update/matcher.go:27-72`
 - Only `page_size` episodes are queued per update cycle (default 50)
 - Downloads happen to temp directory first, then copied to storage to prevent incomplete files
+- yt-dlp also fetches subtitles (`--write-subs --write-auto-subs --convert-subs vtt`), the `.info.json` metadata sidecar, and embeds standard tags + thumbnail (`--embed-metadata --embed-thumbnail`); `ytdl.Download()` returns a `DownloadResult` (media path + discovered sidecars), NOT an `io.ReadCloser`
 - On success: status set to `EpisodeDownloaded` with file size recorded
 - On failure: status set to `EpisodeError`, retry attempted next cycle
+
+### Enrichment Phase (transcripts + chapters)
+- Runs after a successful download, BEFORE the media file is copied to storage (chapter embedding mutates the file in place); see `pkg/enrich`
+- **Best-effort and attempted exactly once**: failures are logged and the episode is published without the missing pieces; there is NO retry of enrichment, and NO backfill of episodes downloaded before the feature existed
+- Transcript chain: platform subtitles (uploaded preferred, auto-captions fallback, language list from `transcripts.languages` → `custom.lang` → `en`) → ordered STT chain (`[[transcripts.stt]]`: `openai` (OpenAI-compatible API), `whisper_cpp`, `command`); output is `<base>.vtt` + `<base>.transcript.json` (PodcastIndex JSON, via `transcript2json` tool or built-in converter in `pkg/enrich/vtt.go`)
+- Chapter chain (cheapest first): platform chapters from `.info.json` → description timestamp lists (`podcast-chapters` tool or built-in parser in `pkg/enrich/chapters.go`) → LLM generation via `video-to-chapters-with-transcript` (runs automatically when AssemblyAI + Gemini keys are configured)
+- Chapter images: one JPEG frame per chapter (chapter start + 1s, max width `image_max_width`, default 1280) extracted with ffmpeg into `<base>.chapter-NN.jpg`; for audio feeds a temporary low-res video is fetched lazily (at most once per episode) unless `chapters.fetch_video_for_audio = false`
+- Chapter embedding: MP3 gets ID3v2 CHAP/CTOC frames (`pkg/media/id3.go`, bogem/id3v2); MP4 gets container chapters (yt-dlp `--embed-chapters` for platform chapters, ffmpeg remux for generated ones)
+- Sidecar metadata is persisted on `Episode.Enrichment` (file names only); `buildXML` emits tags from it without probing storage
+- Helper tools are OPTIONAL external binaries (`[tools]` config, resolved from PATH); missing tools log a warning and fall back to built-in Go implementations (or skip the feature)
 
 ### Cleanup Phase (Important!)
 - `cleanup()` in `updater.go:373-441` runs AFTER each successful update cycle
 - **Only triggered if `clean.keep_last` is configured** (global or per-feed)
 - Keeps most recent N episodes by PubDate (descending order)
 - Deleted episodes have status changed to `EpisodeCleaned` and title/description cleared
+- Transcript/chapter sidecar files are deleted together with the media file, and `Episode.Enrichment` is set to nil
 - **Files are deleted from storage but database records are retained**
 - This is a soft-delete: episodes remain in the database forever
 
@@ -125,6 +137,17 @@ min_duration = 60                      # Minimum duration in seconds
 max_duration = 3600                    # Maximum duration in seconds
 min_age = 1                            # Skip episodes newer than N days
 max_age = 365                          # Skip episodes older than N days
+
+[feeds.my_feed.transcripts]            # Per-feed override of global [transcripts]
+enabled = true                         # Default true
+languages = ["en"]                     # Default: custom.lang, then "en"
+# [[feeds.my_feed.transcripts.stt]] entries replace the global chain wholesale
+
+[feeds.my_feed.chapters]               # Per-feed override of global [chapters]
+enabled = true                         # Default true
+extract_images = true                  # Frame per chapter as chapter art (default true)
+fetch_video_for_audio = true           # Temp low-res video for audio feeds (default true)
+image_max_width = 1280                 # Max chapter image width in pixels
 ```
 
 ### Filter Examples
@@ -164,6 +187,7 @@ title = "(?i)full episode"
 
 ```toml
 [feeds.my_feed.custom]                 # Override feed metadata
+locked = true                          # podcast:locked tag; default: locked iff ownerEmail set
 title = "Custom Title"
 description = "Custom description"
 author = "Author Name"
@@ -247,6 +271,46 @@ custom_binary = "/path/to/yt-dlp"      # Custom youtube-dl/yt-dlp binary
 [cleanup]
 keep_last = 50                         # Applied to all feeds unless overridden
 ```
+
+### Transcripts, Chapters and Helper Tools (global)
+```toml
+[tools]                                # Optional external helpers, resolved from PATH
+transcript2json   = "transcript2json"                    # hbmartin/podcast-transcript-convert
+podcast_chapters  = "podcast-chapters"                   # hbmartin/podcast-chapter-tools
+video_to_chapters = "video-to-chapters-with-transcript"  # hbmartin/video-to-chapters-with-transcript
+ffmpeg            = "ffmpeg"
+
+[transcripts]                          # Global defaults, feeds inherit unless they have their own section
+enabled = true
+languages = ["en"]
+
+[[transcripts.stt]]                    # Ordered STT fallback chain (no subs at all); empty = disabled
+type = "openai"                        # OpenAI-compatible /v1/audio/transcriptions
+base_url = "https://api.openai.com/v1" # Also covers Groq / local whisper servers
+api_key = ""                           # Or PODSYNC_STT_API_KEY (fills empty openai keys)
+model = "whisper-1"
+
+[[transcripts.stt]]
+type = "whisper_cpp"                   # Local whisper.cpp binary (offline)
+binary = "whisper-cli"
+model_path = "/models/ggml-base.en.bin"
+
+[[transcripts.stt]]
+type = "command"                       # Arbitrary command hook
+command = ["/opt/my-stt.sh"]           # Env: PODSYNC_AUDIO_FILE, PODSYNC_TRANSCRIPT_OUTPUT, PODSYNC_LANGUAGE
+timeout = 1800                         # Seconds (default 1800)
+
+[chapters]
+enabled = true
+extract_images = true
+fetch_video_for_audio = true
+image_max_width = 1280
+
+[chapters.llm]                         # AI chapter generation; activates when BOTH keys set
+assemblyai_api_key = ""                # Or PODSYNC_ASSEMBLYAI_API_KEY
+gemini_api_key = ""                    # Or PODSYNC_GEMINI_API_KEY
+```
+Merging: a feed without its own `[feeds.X.transcripts]`/`[feeds.X.chapters]` section inherits the global section (by pointer, in `applyDefaults`); a feed WITH its own section does NOT inherit any global values (including the STT chain and LLM keys).
 
 ### Logging
 ```toml
@@ -334,7 +398,27 @@ All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`add
 - Template tokens: `{{id}}`, `{{title}}`, `{{pub_date}}` (YYYY-MM-DD), `{{feed_id}}`
 - Default template: `{{id}}` if not configured
 - Sanitization removes invalid characters, normalizes whitespace
-- `--migrate-filenames` CLI flag renames existing files to match current template
+- `--migrate-filenames` CLI flag renames existing files to match current template (does NOT rename enrichment sidecar files)
+
+### Sidecar Files (transcripts, chapters, images)
+All sidecars are flat files next to the media, named from the episode base name (`pkg/enrich/naming.go`):
+
+| Artifact | Name | Feed tag |
+|---|---|---|
+| WebVTT transcript | `<base>.vtt` | `<podcast:transcript type="text/vtt">` |
+| PodcastIndex transcript | `<base>.transcript.json` | `<podcast:transcript type="application/json">` |
+| PodcastIndex chapters | `<base>.chapters.json` | `<podcast:chapters type="application/json+chapters">` |
+| Chapter images | `<base>.chapter-NN.jpg` (1-based, zero-padded) | Referenced via `img` inside the chapters JSON |
+
+The web server serves them like any other file (`.vtt` MIME type registered in `services/web/server.go`). Image URLs inside chapters JSON are absolute and baked at download time — a hostname change leaves them stale.
+
+## RSS Generation and Podcasting 2.0 (pkg/rss)
+
+`pkg/rss` is an in-tree fork of `eduncan911/podcast` v1.4.2 (MIT, LICENSE kept) — the upstream library's closed structs cannot emit `podcast:*` namespace tags. A parity test (`pkg/rss/rss_test.go` `TestUpstreamParity`) guarantees output is byte-identical to upstream except for the added `xmlns:podcast` declaration; keep it passing when touching the fork.
+
+Emitted Podcasting 2.0 tags (`pkg/feed/xml.go` `Build`):
+- Channel: `podcast:guid` (spec UUIDv5 of `{hostname}/{feedID}.xml`, test vectors in `TestGUID`), `podcast:medium` (`video`/`podcast`), `podcast:locked` (see `custom.locked`), `podcast:person` (channel author as host)
+- Item: `podcast:transcript` (VTT + JSON), `podcast:chapters`, `podcast:socialInteract` (original video URL; protocol slug = provider name, which is NOT in the spec's protocol list — pragmatic choice, validators may warn), plus `itunes:isClosedCaptioned` when a transcript exists
 
 ## Error Handling
 
@@ -360,6 +444,13 @@ All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`add
 ### Storage
 - S3: Cannot serve files through Podsync, no filename migration
 - Local: Web UI requires `./html/index.html` to exist
+
+### Transcripts and Chapters
+- Enrichment runs exactly once per episode (no retry on failure) and only for NEW downloads — no backfill for episodes downloaded before the feature existed
+- Chapter images inside `<base>.chapters.json` use absolute URLs baked at download time; changing `server.hostname` leaves them stale (feed tags themselves are rebuilt with the new hostname)
+- `--embed-chapters`/ffmpeg cannot write ID3 CHAP frames — MP3 embedding is done natively via bogem/id3v2; custom-format containers other than mp3/mp4/m4a/m4v/mov get no in-file chapters
+- The exact CLI contracts of the three optional helper tools are best-effort (graceful fallback to built-in implementations); `video-to-chapters-with-transcript` requires AssemblyAI + Gemini keys and a local video file
+- STT chain and LLM chapter generation spend API money per episode — they only activate when explicitly configured (keys present)
 
 ### Performance
 - Feed updates are sequential (not parallel)
@@ -494,6 +585,12 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - SoundCloud builder: `pkg/builder/soundcloud.go`
 - Twitch builder: `pkg/builder/twitch.go`
 - URL parsing: `pkg/builder/url.go`
-- youtube-dl wrapper: `pkg/ytdl/ytdl.go`
+- youtube-dl wrapper: `pkg/ytdl/ytdl.go` (Download/FetchVideo/buildArgs), `pkg/ytdl/download_result.go` (DownloadResult, sidecar discovery)
 - Hooks: `pkg/feed/hooks.go`
 - API key rotation: `pkg/feed/key.go`
+- RSS library fork (iTunes + Podcasting 2.0): `pkg/rss/` (`pc20.go` for podcast: namespace types)
+- Enrichment orchestrator: `pkg/enrich/enrich.go` (transcript/chapter chains), `pkg/enrich/naming.go` (sidecar names)
+- Built-in converters/parsers: `pkg/enrich/vtt.go` (VTT→PodcastIndex JSON), `pkg/enrich/chapters.go` (info.json/description/flexible chapter parsing)
+- STT fallback chain: `pkg/enrich/stt/` (openai.go, whispercpp.go, command.go)
+- Media manipulation: `pkg/media/id3.go` (ID3 CHAP/CTOC), `pkg/media/ffmpeg.go` (frames, MP4 chapters)
+- Enrichment config structs: `pkg/feed/enrich_config.go`

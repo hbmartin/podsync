@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"mime"
 	"net/http"
 	"time"
 
@@ -12,6 +13,14 @@ import (
 	"github.com/mxpv/podsync/pkg/db"
 	"github.com/mxpv/podsync/pkg/model"
 )
+
+func init() {
+	// WebVTT transcripts are served next to episode files, but .vtt is
+	// missing from Go's built-in MIME table and often from system tables.
+	if err := mime.AddExtensionType(".vtt", "text/vtt"); err != nil {
+		log.WithError(err).Warn("failed to register .vtt MIME type")
+	}
+}
 
 type Server struct {
 	http.Server

@@ -512,3 +512,200 @@ func setup(t *testing.T, file string) string {
 
 	return f.Name()
 }
+
+func TestEnrichmentConfig(t *testing.T) {
+	const file = `
+[server]
+data_dir = "/data"
+
+[tools]
+transcript2json = "/opt/bin/transcript2json"
+
+[transcripts]
+languages = ["de", "en"]
+
+[[transcripts.stt]]
+type = "openai"
+base_url = "https://api.openai.com/v1"
+model = "whisper-1"
+
+[chapters]
+image_max_width = 640
+
+[chapters.llm]
+assemblyai_api_key = "aai"
+gemini_api_key = "gem"
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+
+  [feeds.B]
+  url = "https://youtube.com/channel/456"
+  [feeds.B.transcripts]
+  enabled = false
+  [feeds.B.chapters]
+  fetch_video_for_audio = false
+`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/opt/bin/transcript2json", config.Tools.Transcript2JSON)
+
+	// Feed A inherits the global sections
+	feedA := config.Feeds["A"]
+	require.NotNil(t, feedA.Transcripts)
+	assert.True(t, feedA.Transcripts.IsEnabled())
+	assert.Equal(t, []string{"de", "en"}, feedA.Transcripts.Languages)
+	require.Len(t, feedA.Transcripts.STTProviders(), 1)
+	assert.Equal(t, "openai", feedA.Transcripts.STTProviders()[0].Type)
+
+	require.NotNil(t, feedA.Chapters)
+	assert.True(t, feedA.Chapters.IsEnabled())
+	assert.True(t, feedA.Chapters.ImagesEnabled())
+	assert.True(t, feedA.Chapters.VideoFetchEnabled())
+	assert.Equal(t, 640, feedA.Chapters.ImageWidth())
+	assert.True(t, feedA.Chapters.LLMConfigured())
+
+	// Feed B keeps its own overrides
+	feedB := config.Feeds["B"]
+	assert.False(t, feedB.Transcripts.IsEnabled())
+	assert.True(t, feedB.Chapters.IsEnabled())
+	assert.False(t, feedB.Chapters.VideoFetchEnabled())
+	assert.False(t, feedB.Chapters.LLMConfigured(), "per-feed section does not inherit global LLM keys")
+}
+
+func TestEnrichmentConfigDefaults(t *testing.T) {
+	const file = `
+[server]
+data_dir = "/data"
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	feedA := config.Feeds["A"]
+	assert.Nil(t, feedA.Transcripts)
+	assert.Nil(t, feedA.Chapters)
+
+	// Nil sections behave as enabled with defaults
+	assert.True(t, feedA.Transcripts.IsEnabled())
+	assert.True(t, feedA.Chapters.IsEnabled())
+	assert.True(t, feedA.Chapters.ImagesEnabled())
+	assert.True(t, feedA.Chapters.VideoFetchEnabled())
+	assert.Equal(t, 1280, feedA.Chapters.ImageWidth())
+	assert.False(t, feedA.Chapters.LLMConfigured())
+	assert.Empty(t, feedA.Transcripts.STTProviders())
+}
+
+func TestSTTProviderValidation(t *testing.T) {
+	const file = `
+[server]
+data_dir = "/data"
+
+[[transcripts.stt]]
+type = "openai"
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base_url is required")
+
+	const badType = `
+[server]
+data_dir = "/data"
+
+[[transcripts.stt]]
+type = "bogus"
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+`
+	path2 := setup(t, badType)
+	defer os.Remove(path2)
+
+	_, err = LoadConfig(path2)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown stt provider type")
+}
+
+func TestEnrichmentEnvironmentVariables(t *testing.T) {
+	t.Setenv("PODSYNC_STT_API_KEY", "stt-secret")
+	t.Setenv("PODSYNC_ASSEMBLYAI_API_KEY", "aai-secret")
+	t.Setenv("PODSYNC_GEMINI_API_KEY", "gem-secret")
+
+	const file = `
+[server]
+data_dir = "/data"
+
+[[transcripts.stt]]
+type = "openai"
+base_url = "https://api.openai.com/v1"
+model = "whisper-1"
+
+[[transcripts.stt]]
+type = "openai"
+base_url = "https://other.example.com/v1"
+model = "whisper-1"
+api_key = "explicit"
+
+[chapters]
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	providers := config.Transcripts.STTProviders()
+	require.Len(t, providers, 2)
+	assert.Equal(t, "stt-secret", providers[0].APIKey, "env fills empty keys")
+	assert.Equal(t, "explicit", providers[1].APIKey, "explicit keys win over env")
+
+	require.NotNil(t, config.Chapters)
+	assert.Equal(t, "aai-secret", config.Chapters.LLM.AssemblyAIKey)
+	assert.Equal(t, "gem-secret", config.Chapters.LLM.GeminiKey)
+	assert.True(t, config.Chapters.LLMConfigured())
+}
+
+func TestCustomLockedConfig(t *testing.T) {
+	const file = `
+[server]
+data_dir = "/data"
+
+[feeds]
+  [feeds.A]
+  url = "https://youtube.com/channel/123"
+  [feeds.A.custom]
+  locked = false
+`
+	path := setup(t, file)
+	defer os.Remove(path)
+
+	config, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	locked := config.Feeds["A"].Custom.Locked
+	require.NotNil(t, locked)
+	assert.False(t, *locked)
+}

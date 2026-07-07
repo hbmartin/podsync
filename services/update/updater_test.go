@@ -11,10 +11,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
 	"github.com/mxpv/podsync/pkg/ytdl"
@@ -102,23 +104,61 @@ func (f *testFS) Size(_ context.Context, name string) (int64, error) {
 	return int64(len(data)), nil
 }
 
-// testDownloader implements the Downloader interface.
+// testDownloader implements the Downloader interface. The download callback
+// keeps the old io.ReadCloser contract for test brevity; its content is
+// materialized into a real temp file as the download result.
 type testDownloader struct {
+	t        *testing.T
 	download func(ctx context.Context, cfg *feed.Config, episode *model.Episode) (io.ReadCloser, error)
 }
 
-func (d *testDownloader) Download(ctx context.Context, cfg *feed.Config, episode *model.Episode) (io.ReadCloser, error) {
-	return d.download(ctx, cfg, episode)
+func (d *testDownloader) Download(ctx context.Context, cfg *feed.Config, episode *model.Episode, _ ytdl.DownloadOptions) (*ytdl.DownloadResult, error) {
+	reader, err := d.download(ctx, cfg, episode)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	dir := d.t.TempDir()
+	mediaPath := filepath.Join(dir, feed.EpisodeName(cfg, episode))
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(mediaPath, data, 0o600); err != nil {
+		return nil, err
+	}
+
+	return &ytdl.DownloadResult{MediaPath: mediaPath}, nil
+}
+
+func (d *testDownloader) FetchVideo(_ context.Context, _ *model.Episode, _ string) (string, error) {
+	return "", errors.New("not supported in tests")
 }
 
 func (d *testDownloader) PlaylistMetadata(_ context.Context, _ string) (ytdl.PlaylistMetadata, error) {
 	return ytdl.PlaylistMetadata{}, nil
 }
 
+// testEnricher implements the Enricher interface.
+type testEnricher struct {
+	enrich func(ctx context.Context, req enrich.Request) (enrich.Result, error)
+}
+
+func (e *testEnricher) Enrich(ctx context.Context, req enrich.Request) (enrich.Result, error) {
+	return e.enrich(ctx, req)
+}
+
 func newTestManager(t *testing.T, db *testDB, fs *testFS, dl *testDownloader) *Manager {
 	t.Helper()
+	return newTestManagerWithEnricher(t, db, fs, dl, nil)
+}
 
-	manager, err := NewUpdater(map[string]*feed.Config{}, nil, "http://localhost", dl, db, fs)
+func newTestManagerWithEnricher(t *testing.T, db *testDB, fs *testFS, dl *testDownloader, enricher Enricher) *Manager {
+	t.Helper()
+
+	manager, err := NewUpdater(map[string]*feed.Config{}, nil, "http://localhost", dl, enricher, db, fs)
 	require.NoError(t, err)
 	return manager
 }
@@ -187,7 +227,7 @@ func TestDownloadEpisodes_AlreadyOnDisk(t *testing.T) {
 		"feed1/" + feed.EpisodeName(cfg, episode): []byte("existing content"),
 	}}
 
-	dl := &testDownloader{download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
 		t.Fatal("downloader must not be called for episodes already on disk")
 		return nil, nil
 	}}
@@ -207,7 +247,7 @@ func TestDownloadEpisodes_Success(t *testing.T) {
 	cfg := &feed.Config{ID: "feed1", PageSize: 50}
 	fs := &testFS{}
 
-	dl := &testDownloader{download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("episode data")), nil
 	}}
 
@@ -238,7 +278,7 @@ func TestDownloadEpisodes_PostDownloadHookEnv(t *testing.T) {
 		},
 	}
 
-	dl := &testDownloader{download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("data")), nil
 	}}
 
@@ -271,7 +311,7 @@ func TestDownloadEpisodes_ErrorSetsStatusAndRunsHook(t *testing.T) {
 		},
 	}
 
-	dl := &testDownloader{download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
 		return nil, errors.New("video is unavailable")
 	}}
 
@@ -298,7 +338,7 @@ func TestDownloadEpisodes_TooManyRequestsStopsBatch(t *testing.T) {
 	cfg := &feed.Config{ID: "feed1", PageSize: 50}
 
 	var calls int
-	dl := &testDownloader{download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
 		calls++
 		return nil, ytdl.ErrTooManyRequests
 	}}
@@ -311,4 +351,126 @@ func TestDownloadEpisodes_TooManyRequestsStopsBatch(t *testing.T) {
 	require.Equal(t, 1, calls, "batch must stop after a 429 response")
 	require.Equal(t, model.EpisodeNew, first.Status, "429 must not mark the episode as errored")
 	require.Equal(t, model.EpisodeNew, second.Status)
+}
+
+func TestDownloadEpisodes_EnrichmentSidecars(t *testing.T) {
+	episode := &model.Episode{ID: "1", Title: "Enriched", Status: model.EpisodeNew}
+	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+	cfg := &feed.Config{ID: "feed1", PageSize: 50}
+	fs := &testFS{}
+
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("episode data")), nil
+	}}
+
+	enricher := &testEnricher{enrich: func(_ context.Context, req enrich.Request) (enrich.Result, error) {
+		require.Equal(t, "http://localhost/feed1", req.BaseURL)
+		require.Equal(t, feed.EpisodeBaseName(cfg, episode), req.BaseName)
+		require.NotEmpty(t, req.MediaPath)
+
+		dir := t.TempDir()
+		write := func(name, content string) string {
+			path := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+			return path
+		}
+		return enrich.Result{
+			TranscriptVTT:    write("1.vtt", "WEBVTT"),
+			TranscriptJSON:   write("1.transcript.json", "{}"),
+			TranscriptLang:   "en",
+			TranscriptSource: enrich.SourcePlatform,
+			ChaptersJSON:     write("1.chapters.json", "{}"),
+			ChaptersSource:   enrich.SourceDescription,
+			ChapterImages:    []string{write("1.chapter-01.jpg", "jpg")},
+		}, nil
+	}}
+
+	manager := newTestManagerWithEnricher(t, db, fs, dl, enricher)
+
+	err := manager.downloadEpisodes(context.Background(), cfg, []*model.Episode{episode})
+	require.NoError(t, err)
+
+	require.Equal(t, model.EpisodeDownloaded, episode.Status)
+	require.ElementsMatch(t, []string{
+		"feed1/1.mp4",
+		"feed1/1.vtt",
+		"feed1/1.transcript.json",
+		"feed1/1.chapters.json",
+		"feed1/1.chapter-01.jpg",
+	}, fs.created)
+
+	require.NotNil(t, episode.Enrichment)
+	require.Equal(t, "1.vtt", episode.Enrichment.TranscriptVTT)
+	require.Equal(t, "1.transcript.json", episode.Enrichment.TranscriptJSON)
+	require.Equal(t, "en", episode.Enrichment.TranscriptLang)
+	require.Equal(t, enrich.SourcePlatform, episode.Enrichment.TranscriptSource)
+	require.Equal(t, "1.chapters.json", episode.Enrichment.ChaptersJSON)
+	require.Equal(t, enrich.SourceDescription, episode.Enrichment.ChaptersSource)
+	require.Equal(t, []string{"1.chapter-01.jpg"}, episode.Enrichment.ChapterImages)
+}
+
+func TestDownloadEpisodes_EnrichmentFailureStillPublishes(t *testing.T) {
+	episode := &model.Episode{ID: "1", Title: "Unenriched", Status: model.EpisodeNew}
+	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+	cfg := &feed.Config{ID: "feed1", PageSize: 50}
+	fs := &testFS{}
+
+	dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("episode data")), nil
+	}}
+
+	enricher := &testEnricher{enrich: func(context.Context, enrich.Request) (enrich.Result, error) {
+		return enrich.Result{}, errors.New("all stt providers failed")
+	}}
+
+	manager := newTestManagerWithEnricher(t, db, fs, dl, enricher)
+
+	err := manager.downloadEpisodes(context.Background(), cfg, []*model.Episode{episode})
+	require.NoError(t, err)
+
+	require.Equal(t, model.EpisodeDownloaded, episode.Status)
+	require.Nil(t, episode.Enrichment)
+	require.Equal(t, []string{"feed1/" + feed.EpisodeName(cfg, episode)}, fs.created)
+}
+
+func TestCleanup_DeletesSidecars(t *testing.T) {
+	old := &model.Episode{
+		ID:      "old",
+		Status:  model.EpisodeDownloaded,
+		PubDate: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		Enrichment: &model.EpisodeEnrichment{
+			TranscriptVTT: "old.vtt",
+			ChaptersJSON:  "old.chapters.json",
+			ChapterImages: []string{"old.chapter-01.jpg"},
+		},
+	}
+	recent := &model.Episode{
+		ID:      "recent",
+		Status:  model.EpisodeDownloaded,
+		PubDate: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {old, recent}}}
+
+	fs := &testFS{files: map[string][]byte{
+		"feed1/old.mp4":            []byte("x"),
+		"feed1/old.vtt":            []byte("x"),
+		"feed1/old.chapters.json":  []byte("x"),
+		"feed1/old.chapter-01.jpg": []byte("x"),
+		"feed1/recent.mp4":         []byte("x"),
+	}}
+
+	manager := newTestManager(t, db, fs, nil)
+
+	cfg := &feed.Config{ID: "feed1", Clean: &feed.Cleanup{KeepLast: 1}}
+	require.NoError(t, manager.cleanup(context.Background(), cfg))
+
+	require.Equal(t, model.EpisodeCleaned, old.Status)
+	require.Nil(t, old.Enrichment)
+	require.NotContains(t, fs.files, "feed1/old.mp4")
+	require.NotContains(t, fs.files, "feed1/old.vtt")
+	require.NotContains(t, fs.files, "feed1/old.chapters.json")
+	require.NotContains(t, fs.files, "feed1/old.chapter-01.jpg")
+	require.Contains(t, fs.files, "feed1/recent.mp4")
+
+	require.Equal(t, model.EpisodeDownloaded, recent.Status)
 }

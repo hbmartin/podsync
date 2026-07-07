@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	itunes "github.com/eduncan911/podcast"
 	"github.com/pkg/errors"
 
 	"github.com/mxpv/podsync/pkg/model"
+	itunes "github.com/mxpv/podsync/pkg/rss"
 )
 
 // sort.Interface implementation
@@ -122,6 +122,45 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		p.Language = cfg.Custom.Language
 	}
 
+	// Podcasting 2.0 channel tags (https://podcastindex.org/namespace/1.0)
+	feedURL := fmt.Sprintf("%s/%s.xml", strings.TrimRight(hostname, "/"), cfg.ID)
+	p.PodcastGUID = itunes.GUID(feedURL)
+
+	if feed.Format == model.FormatVideo {
+		p.PodcastMedium = "video"
+	} else {
+		p.PodcastMedium = "podcast"
+	}
+
+	lockedValue := ""
+	switch {
+	case cfg.Custom.Locked != nil && *cfg.Custom.Locked:
+		lockedValue = "yes"
+	case cfg.Custom.Locked != nil:
+		lockedValue = "no"
+	case cfg.Custom.OwnerEmail != "":
+		// Podsync feeds are personal; mark them as not importable by
+		// hosting platforms whenever there is an owner contact to verify
+		// unlock requests against.
+		lockedValue = "yes"
+	}
+	if lockedValue != "" {
+		p.PodcastLocked = &itunes.Locked{Owner: cfg.Custom.OwnerEmail, Value: lockedValue}
+	}
+
+	if author != "" {
+		personImg := cfg.Custom.CoverArt
+		if personImg == "" {
+			personImg = feed.CoverArt
+		}
+		p.PodcastPersons = append(p.PodcastPersons, &itunes.Person{
+			Role: "host",
+			Img:  personImg,
+			Href: feed.ItemURL,
+			Name: author,
+		})
+	}
+
 	for _, episode := range feed.Episodes {
 		if episode.PubDate.IsZero() {
 			episode.PubDate = now
@@ -162,10 +201,47 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 
 		var (
 			episodeName = EpisodeName(cfg, episode)
-			downloadURL = fmt.Sprintf("%s/%s/%s", strings.TrimRight(hostname, "/"), cfg.ID, episodeName)
+			feedBaseURL = fmt.Sprintf("%s/%s", strings.TrimRight(hostname, "/"), cfg.ID)
+			downloadURL = fmt.Sprintf("%s/%s", feedBaseURL, episodeName)
 		)
 
 		item.AddEnclosure(downloadURL, enclosureType, episode.Size)
+
+		if enrichment := episode.Enrichment; enrichment != nil {
+			if enrichment.TranscriptVTT != "" {
+				item.PodcastTranscripts = append(item.PodcastTranscripts, &itunes.Transcript{
+					URL:      fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptVTT),
+					Type:     itunes.TranscriptTypeVTT,
+					Language: enrichment.TranscriptLang,
+				})
+			}
+			if enrichment.TranscriptJSON != "" {
+				item.PodcastTranscripts = append(item.PodcastTranscripts, &itunes.Transcript{
+					URL:      fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptJSON),
+					Type:     itunes.TranscriptTypeJSON,
+					Language: enrichment.TranscriptLang,
+				})
+			}
+			if len(item.PodcastTranscripts) > 0 {
+				item.IIsClosedCaptioned = "yes"
+			}
+			if enrichment.ChaptersJSON != "" {
+				item.PodcastChapters = &itunes.Chapters{
+					URL:  fmt.Sprintf("%s/%s", feedBaseURL, enrichment.ChaptersJSON),
+					Type: itunes.ChaptersTypeJSON,
+				}
+			}
+		}
+
+		if episode.VideoURL != "" {
+			item.PodcastSocialInteracts = []*itunes.SocialInteract{{
+				URI: episode.VideoURL,
+				// The spec's protocol slug list has no entry for video
+				// platforms; use the provider name so apps that only look
+				// at the URI still work.
+				Protocol: strings.ToLower(string(feed.Provider)),
+			}}
+		}
 
 		// p.AddItem requires description to be not empty, use workaround
 		if item.Description == "" {

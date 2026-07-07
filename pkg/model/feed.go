@@ -41,6 +41,39 @@ type Episode struct {
 	Size        int64         `json:"size"`
 	Order       string        `json:"order"`
 	Status      EpisodeStatus `json:"status"` // Disk status
+	// Enrichment describes transcript/chapter sidecar files stored next to
+	// the episode media. Nil for episodes downloaded before enrichment
+	// support was added or when enrichment produced nothing.
+	Enrichment *EpisodeEnrichment `json:"enrichment,omitempty"`
+}
+
+// EpisodeEnrichment records the sidecar artifacts (transcripts, chapters,
+// chapter images) generated for a downloaded episode. Values are file names
+// within the feed's storage directory, not full paths or URLs.
+type EpisodeEnrichment struct {
+	TranscriptVTT    string   `json:"transcript_vtt,omitempty"`
+	TranscriptJSON   string   `json:"transcript_json,omitempty"`
+	TranscriptLang   string   `json:"transcript_lang,omitempty"`
+	TranscriptSource string   `json:"transcript_source,omitempty"`
+	ChaptersJSON     string   `json:"chapters_json,omitempty"`
+	ChaptersSource   string   `json:"chapters_source,omitempty"`
+	ChapterImages    []string `json:"chapter_images,omitempty"`
+}
+
+// SidecarFiles returns the names of all sidecar files recorded in the
+// enrichment, for copying to or deleting from storage.
+func (e *EpisodeEnrichment) SidecarFiles() []string {
+	if e == nil {
+		return nil
+	}
+	var files []string
+	for _, name := range []string{e.TranscriptVTT, e.TranscriptJSON, e.ChaptersJSON} {
+		if name != "" {
+			files = append(files, name)
+		}
+	}
+	files = append(files, e.ChapterImages...)
+	return files
 }
 
 type Feed struct {

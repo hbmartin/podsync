@@ -5,11 +5,13 @@ go 1.25.8
 require (
 	github.com/BrianHicks/finch v0.0.0-20140409222414-419bd73c29ec
 	github.com/aws/aws-sdk-go v1.44.144
+	github.com/bogem/id3v2/v2 v2.1.4
 	github.com/dgraph-io/badger v1.6.2
 	github.com/eduncan911/podcast v1.4.2
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/gilliek/go-opml v1.0.0
 	github.com/golang/mock v1.6.0
+	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/jessevdk/go-flags v1.6.1
 	github.com/nicklaw5/helix v1.25.0
@@ -42,7 +44,6 @@ require (
 	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.17 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/grafov/m3u8 v0.11.1 // indirect

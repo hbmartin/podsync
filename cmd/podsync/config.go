@@ -38,6 +38,15 @@ type Config struct {
 	Downloader ytdl.Config `toml:"downloader"`
 	// Global cleanup policy applied to feeds that don't specify their own cleanup policy
 	Cleanup *feed.Cleanup `toml:"cleanup"`
+	// Tools points to the optional external helper binaries used for
+	// transcript and chapter processing
+	Tools feed.ToolsConfig `toml:"tools"`
+	// Transcripts is the global transcript policy, applied to feeds that
+	// don't specify their own [feeds.X.transcripts] section
+	Transcripts *feed.TranscriptsConfig `toml:"transcripts"`
+	// Chapters is the global chapter policy, applied to feeds that don't
+	// specify their own [feeds.X.chapters] section
+	Chapters *feed.ChaptersConfig `toml:"chapters"`
 }
 
 type Log struct {
@@ -135,7 +144,47 @@ func (c *Config) validate() error {
 		}
 	}
 
+	for _, transcripts := range c.transcriptConfigs() {
+		for i, provider := range transcripts.STTProviders() {
+			if err := validateSTTProvider(provider); err != nil {
+				result = multierror.Append(result, errors.Wrapf(err, "invalid stt provider %d", i+1))
+			}
+		}
+	}
+
+	for _, chapters := range c.chapterConfigs() {
+		if chapters.ImageMaxWidth < 0 {
+			result = multierror.Append(result, errors.New("chapters image_max_width must be positive"))
+		}
+	}
+
 	return result.ErrorOrNil()
+}
+
+func validateSTTProvider(provider *feed.STTProviderConfig) error {
+	switch provider.Type {
+	case feed.STTTypeOpenAI:
+		if provider.BaseURL == "" {
+			return errors.New("base_url is required for openai providers")
+		}
+		if provider.Model == "" {
+			return errors.New("model is required for openai providers")
+		}
+	case feed.STTTypeWhisperCPP:
+		if provider.Binary == "" {
+			return errors.New("binary is required for whisper_cpp providers")
+		}
+		if provider.ModelPath == "" {
+			return errors.New("model_path is required for whisper_cpp providers")
+		}
+	case feed.STTTypeCommand:
+		if len(provider.Command) == 0 {
+			return errors.New("command is required for command providers")
+		}
+	default:
+		return errors.Errorf("unknown stt provider type %q (expected openai, whisper_cpp or command)", provider.Type)
+	}
+	return nil
 }
 
 func (c *Config) applyDefaults(configPath string) {
@@ -196,6 +245,15 @@ func (c *Config) applyDefaults(configPath string) {
 		if _feed.Clean == nil && c.Cleanup != nil {
 			_feed.Clean = c.Cleanup
 		}
+
+		// Apply global transcript/chapter policies if the feed doesn't
+		// have its own
+		if _feed.Transcripts == nil {
+			_feed.Transcripts = c.Transcripts
+		}
+		if _feed.Chapters == nil {
+			_feed.Chapters = c.Chapters
+		}
 	}
 }
 
@@ -221,6 +279,63 @@ func (c *Config) applyEnv() {
 			c.Tokens[provider] = keys
 		}
 	}
+
+	// STT API key applies to "openai" providers that don't set their own
+	if sttKey, ok := os.LookupEnv("PODSYNC_STT_API_KEY"); ok {
+		for _, transcripts := range c.transcriptConfigs() {
+			for _, provider := range transcripts.STTProviders() {
+				if provider.Type == feed.STTTypeOpenAI && provider.APIKey == "" {
+					provider.APIKey = sttKey
+				}
+			}
+		}
+	}
+
+	// LLM chapter generation keys
+	for _, chapters := range c.chapterConfigs() {
+		if key, ok := os.LookupEnv("PODSYNC_ASSEMBLYAI_API_KEY"); ok && chapters.LLM.AssemblyAIKey == "" {
+			chapters.LLM.AssemblyAIKey = key
+		}
+		if key, ok := os.LookupEnv("PODSYNC_GEMINI_API_KEY"); ok && chapters.LLM.GeminiKey == "" {
+			chapters.LLM.GeminiKey = key
+		}
+	}
+}
+
+// transcriptConfigs returns all distinct transcript config sections
+// (global + per-feed overrides).
+func (c *Config) transcriptConfigs() []*feed.TranscriptsConfig {
+	seen := make(map[*feed.TranscriptsConfig]bool)
+	var configs []*feed.TranscriptsConfig
+	add := func(cfg *feed.TranscriptsConfig) {
+		if cfg != nil && !seen[cfg] {
+			seen[cfg] = true
+			configs = append(configs, cfg)
+		}
+	}
+	add(c.Transcripts)
+	for _, f := range c.Feeds {
+		add(f.Transcripts)
+	}
+	return configs
+}
+
+// chapterConfigs returns all distinct chapter config sections
+// (global + per-feed overrides).
+func (c *Config) chapterConfigs() []*feed.ChaptersConfig {
+	seen := make(map[*feed.ChaptersConfig]bool)
+	var configs []*feed.ChaptersConfig
+	add := func(cfg *feed.ChaptersConfig) {
+		if cfg != nil && !seen[cfg] {
+			seen[cfg] = true
+			configs = append(configs, cfg)
+		}
+	}
+	add(c.Chapters)
+	for _, f := range c.Feeds {
+		add(f.Chapters)
+	}
+	return configs
 }
 
 // StringSlice is a toml extension that lets you to specify either a string

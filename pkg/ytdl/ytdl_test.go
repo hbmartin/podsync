@@ -1,12 +1,15 @@
 package ytdl
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildArgs(t *testing.T) {
@@ -19,6 +22,7 @@ func TestBuildArgs(t *testing.T) {
 		output       string
 		videoURL     string
 		ytdlArgs     []string
+		opts         DownloadOptions
 		expect       []string
 	}{
 		{
@@ -111,6 +115,57 @@ func TestBuildArgs(t *testing.T) {
 			videoURL:     "http://url1",
 			expect:       []string{"--audio-format", "m4a", "--format", "bestaudio[ext=m4a]", "--output", "/tmp/2", "http://url1"},
 		},
+		{
+			name:     "Audio with subtitles and metadata",
+			format:   model.FormatAudio,
+			output:   "/tmp/1",
+			videoURL: "http://url",
+			opts: DownloadOptions{
+				WriteInfoJSON: true,
+				Subtitles:     true,
+				SubLangs:      []string{"en", "de"},
+				EmbedMetadata: true,
+			},
+			expect: []string{
+				"--extract-audio", "--audio-format", "mp3", "--format", "bestaudio",
+				"--write-info-json",
+				"--write-subs", "--write-auto-subs", "--convert-subs", "vtt", "--sub-langs", "en,de",
+				"--embed-metadata", "--embed-thumbnail",
+				"--output", "/tmp/1", "http://url",
+			},
+		},
+		{
+			name:     "Video with embedded chapters",
+			format:   model.FormatVideo,
+			output:   "/tmp/1",
+			videoURL: "http://url",
+			opts: DownloadOptions{
+				Subtitles:     true,
+				EmbedMetadata: true,
+				EmbedChapters: true,
+			},
+			expect: []string{
+				"--format", "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
+				"--write-subs", "--write-auto-subs", "--convert-subs", "vtt",
+				"--embed-metadata", "--embed-thumbnail",
+				"--embed-chapters",
+				"--output", "/tmp/1", "http://url",
+			},
+		},
+		{
+			name:     "Custom args come after option flags",
+			format:   model.FormatAudio,
+			output:   "/tmp/1",
+			videoURL: "http://url",
+			ytdlArgs: []string{"--no-embed-thumbnail"},
+			opts:     DownloadOptions{EmbedMetadata: true},
+			expect: []string{
+				"--extract-audio", "--audio-format", "mp3", "--format", "bestaudio",
+				"--embed-metadata", "--embed-thumbnail",
+				"--no-embed-thumbnail",
+				"--output", "/tmp/1", "http://url",
+			},
+		},
 	}
 
 	for _, tst := range tests {
@@ -123,9 +178,62 @@ func TestBuildArgs(t *testing.T) {
 				YouTubeDLArgs: tst.ytdlArgs,
 			}, &model.Episode{
 				VideoURL: tst.videoURL,
-			}, tst.output)
+			}, tst.output, tst.opts)
 
 			assert.EqualValues(t, tst.expect, result)
 		})
 	}
+}
+
+func TestDiscoverSidecars(t *testing.T) {
+	dir := t.TempDir()
+
+	files := []string{
+		"episode1.mp3",
+		"episode1.info.json",
+		"episode1.en.vtt",
+		"episode1.en-US.vtt",
+		"episode1.vtt",          // no language token, skipped
+		"episode1.en.srt",       // wrong extension, skipped
+		"other.en.vtt",          // different base name, skipped
+		"episode1.extra.en.vtt", // multi-token middle, skipped
+	}
+	for _, name := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600))
+	}
+
+	infoJSON, subs := discoverSidecars(dir, "episode1")
+
+	assert.Equal(t, filepath.Join(dir, "episode1.info.json"), infoJSON)
+	require.Len(t, subs, 2)
+	langs := []string{subs[0].Lang, subs[1].Lang}
+	assert.ElementsMatch(t, []string{"en", "en-US"}, langs)
+}
+
+func TestDiscoverSidecarsEmptyDir(t *testing.T) {
+	infoJSON, subs := discoverSidecars(t.TempDir(), "episode1")
+	assert.Empty(t, infoJSON)
+	assert.Empty(t, subs)
+}
+
+func TestDownloadResultClose(t *testing.T) {
+	dir, err := os.MkdirTemp("", "podsync-test-")
+	require.NoError(t, err)
+
+	mediaPath := filepath.Join(dir, "episode1.mp3")
+	require.NoError(t, os.WriteFile(mediaPath, []byte("media"), 0o600))
+
+	result := &DownloadResult{MediaPath: mediaPath, dir: dir}
+	assert.Equal(t, dir, result.Dir())
+
+	f, err := result.Open()
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	require.NoError(t, result.Close())
+	_, err = os.Stat(dir)
+	assert.True(t, os.IsNotExist(err))
+
+	// Close is idempotent
+	require.NoError(t, result.Close())
 }

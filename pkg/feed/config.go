@@ -62,6 +62,10 @@ type Config struct {
 	// FilenameTemplate controls output media filename (without extension)
 	// Supported tokens: {{id}}, {{title}}, {{pub_date}}, {{feed_id}}
 	FilenameTemplate string `toml:"filename_template"`
+	// Transcripts overrides the global [transcripts] settings for this feed
+	Transcripts *TranscriptsConfig `toml:"transcripts"`
+	// Chapters overrides the global [chapters] settings for this feed
+	Chapters *ChaptersConfig `toml:"chapters"`
 }
 
 type CustomFormat struct {
@@ -94,6 +98,11 @@ type Custom struct {
 	OwnerName       string        `toml:"ownerName"`
 	OwnerEmail      string        `toml:"ownerEmail"`
 	Link            string        `toml:"link"`
+	// Locked controls the podcast:locked tag, which tells hosting platforms
+	// whether importing this feed is allowed. When unset, the feed is marked
+	// locked only if ownerEmail is configured (platforms need a contact to
+	// verify unlock requests).
+	Locked *bool `toml:"locked"`
 }
 
 type Cleanup struct {

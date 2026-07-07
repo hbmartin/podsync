@@ -152,6 +152,30 @@ vimeo = [ # Multiple keys will be rotated.
   command = ["curl", "-X", "POST", "-d", "Download failed for $FEED_NAME: $ERROR_MESSAGE", "https://webhook.example.com/notify"]
   timeout = 30
 
+  # Optional per-feed transcript settings (override the global [transcripts] section).
+  # Transcripts are enabled by default: platform subtitles (uploaded first, then
+  # auto-generated captions) are published as WebVTT + PodcastIndex JSON via
+  # <podcast:transcript> tags.
+  [feeds.ID1.transcripts]
+  enabled = true
+  # Subtitle language preference list; defaults to custom.lang, then "en"
+  languages = ["en"]
+
+  # Optional per-feed chapter settings (override the global [chapters] section).
+  # Chapters are enabled by default: creator chapters from the platform, then
+  # timestamp lists parsed from the description. Published as PodcastIndex
+  # chapters JSON via <podcast:chapters>, embedded as ID3 CHAP frames in MP3s
+  # and container chapters in MP4s.
+  [feeds.ID1.chapters]
+  enabled = true
+  # Extract one video frame per chapter as chapter art (default: true)
+  extract_images = true
+  # For audio feeds, fetch a temporary low-res video to extract frames and
+  # feed AI chapter generation (default: true; costs extra bandwidth)
+  fetch_video_for_audio = true
+  # Maximum chapter image width in pixels (default: 1280)
+  image_max_width = 1280
+
   # Optional feed customizations
   [feeds.ID1.custom]
   title = "Level1News"
@@ -168,6 +192,9 @@ vimeo = [ # Multiple keys will be rotated.
   ownerEmail = "mrs@smith.org"
   # optional: this will override the default link (usually the URL address) in the generated RSS feed with another link
   link = "https://example.org"
+  # optional: controls the podcast:locked tag (can hosting platforms import this feed?).
+  # When unset, the feed is marked locked only if ownerEmail is configured.
+  locked = true
 
 # Podsync uses local database to store feeds and episodes metadata.
 # This section is optional and usually not needed to configure unless some very specific corner cases.
@@ -181,6 +208,61 @@ vimeo = [ # Multiple keys will be rotated.
 self_update = true
 # Download timeout in minutes.
 timeout = 15
+
+# Optional external helper tools for transcripts and chapters.
+# Defaults resolve the bare command names from PATH; features degrade
+# gracefully (with a logged warning) when a tool is missing.
+#[tools]
+#transcript2json   = "transcript2json"                    # hbmartin/podcast-transcript-convert
+#podcast_chapters  = "podcast-chapters"                   # hbmartin/podcast-chapter-tools
+#video_to_chapters = "video-to-chapters-with-transcript"  # hbmartin/video-to-chapters-with-transcript
+#ffmpeg            = "ffmpeg"
+
+# Global transcript policy, applied to feeds without their own
+# [feeds.X.transcripts] section. Enabled by default.
+#[transcripts]
+#enabled = true
+#languages = ["en"]
+
+# Optional ordered speech-to-text fallback chain, used when a video has no
+# subtitles at all. Providers are tried in order until one succeeds.
+# Type "openai" works with any OpenAI-compatible /v1/audio/transcriptions
+# endpoint: api.openai.com, Groq, or local servers (faster-whisper-server,
+# speaches, LocalAI). The API key can also come from PODSYNC_STT_API_KEY.
+#[[transcripts.stt]]
+#type = "openai"
+#base_url = "https://api.openai.com/v1"
+#api_key = "sk-..."
+#model = "whisper-1"
+
+# Local whisper.cpp binary (fully offline).
+#[[transcripts.stt]]
+#type = "whisper_cpp"
+#binary = "whisper-cli"
+#model_path = "/models/ggml-base.en.bin"
+
+# Arbitrary command; receives PODSYNC_AUDIO_FILE, PODSYNC_TRANSCRIPT_OUTPUT
+# (the WebVTT file it must write) and PODSYNC_LANGUAGE environment variables.
+#[[transcripts.stt]]
+#type = "command"
+#command = ["/opt/my-stt.sh"]
+#timeout = 1800
+
+# Global chapter policy, applied to feeds without their own
+# [feeds.X.chapters] section. Enabled by default.
+#[chapters]
+#enabled = true
+#extract_images = true
+#fetch_video_for_audio = true
+#image_max_width = 1280
+
+# AI chapter generation via video-to-chapters-with-transcript, used when an
+# episode has neither platform chapters nor description timestamps.
+# Activates automatically when BOTH keys are set (also via the
+# PODSYNC_ASSEMBLYAI_API_KEY / PODSYNC_GEMINI_API_KEY environment variables).
+#[chapters.llm]
+#assemblyai_api_key = ""
+#gemini_api_key = ""
 
 # Optional log config. If not specified logs to the stdout
 [log]

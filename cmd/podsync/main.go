@@ -27,12 +27,13 @@ import (
 )
 
 type Opts struct {
-	ConfigPath             string `long:"config" short:"c" default:"config.toml" env:"PODSYNC_CONFIG_PATH"`
-	Headless               bool   `long:"headless"`
-	MigrateFilenames       bool   `long:"migrate-filenames" description:"Migrate existing downloaded filenames to current filename_template and exit"`
-	MigrateFilenamesDryRun bool   `long:"migrate-filenames-dry-run" description:"Preview filename migration without writing changes (requires --migrate-filenames)"`
-	Debug                  bool   `long:"debug"`
-	NoBanner               bool   `long:"no-banner"`
+	ConfigPath             string       `long:"config" short:"c" default:"config.toml" env:"PODSYNC_CONFIG_PATH"`
+	Headless               bool         `long:"headless"`
+	MigrateFilenames       bool         `long:"migrate-filenames" description:"Migrate existing downloaded filenames to current filename_template and exit"`
+	MigrateFilenamesDryRun bool         `long:"migrate-filenames-dry-run" description:"Preview filename migration without writing changes (requires --migrate-filenames)"`
+	Debug                  bool         `long:"debug"`
+	NoBanner               bool         `long:"no-banner"`
+	Setup                  SetupCommand `command:"setup" description:"Interactively generate a config.toml"`
 }
 
 const banner = `
@@ -67,7 +68,9 @@ func main() {
 
 	// Parse args
 	opts := Opts{}
-	_, err := flags.Parse(&opts)
+	parser := flags.NewParser(&opts, flags.Default)
+	parser.SubcommandsOptional = true
+	_, err := parser.Parse()
 	if err != nil {
 		log.WithError(err).Fatal("failed to parse command line arguments")
 	}
@@ -77,6 +80,14 @@ func main() {
 	}
 	if opts.MigrateFilenamesDryRun && !opts.MigrateFilenames {
 		log.Fatal("--migrate-filenames-dry-run requires --migrate-filenames")
+	}
+
+	// Interactive config generation, runs before the config file is loaded
+	if parser.Active != nil && parser.Active.Name == "setup" {
+		if err := runSetup(opts.ConfigPath, os.Stdin, os.Stdout); err != nil {
+			log.WithError(err).Fatal("setup failed")
+		}
+		return
 	}
 
 	if !opts.NoBanner {

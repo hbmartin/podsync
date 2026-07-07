@@ -43,9 +43,12 @@ type ExecHook struct {
 //
 // Returns an error if the command fails, times out, or returns a non-zero exit code.
 // The error includes the combined stdout/stderr output for debugging.
-func (h *ExecHook) Invoke(env []string) error {
+func (h *ExecHook) Invoke(ctx context.Context, env []string) error {
 	if h == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if len(h.Command) == 0 {
 		return fmt.Errorf("hook command is empty")
@@ -57,7 +60,7 @@ func (h *ExecHook) Invoke(env []string) error {
 		timeout = 60 // default to 1 minute
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	// Create command with context
@@ -78,6 +81,9 @@ func (h *ExecHook) Invoke(env []string) error {
 	output := string(data)
 
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("hook execution failed: %v, output: %s", ctxErr, output)
+		}
 		return fmt.Errorf("hook execution failed: %v, output: %s", err, output)
 	}
 

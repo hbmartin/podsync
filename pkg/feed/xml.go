@@ -123,8 +123,10 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 	}
 
 	// Podcasting 2.0 channel tags (https://podcastindex.org/namespace/1.0)
-	feedURL := fmt.Sprintf("%s/%s.xml", strings.TrimRight(hostname, "/"), cfg.ID)
-	p.PodcastGUID = itunes.GUID(feedURL)
+	p.PodcastGUID = feed.PodcastGUID
+	if p.PodcastGUID == "" {
+		p.PodcastGUID = PodcastGUID(hostname, cfg.ID)
+	}
 
 	if feed.Format == model.FormatVideo {
 		p.PodcastMedium = "video"
@@ -291,6 +293,11 @@ func EnclosureFromExtension(feedConfig *Config) itunes.EnclosureType {
 	default:
 		return -1
 	}
+}
+
+func PodcastGUID(hostname, feedID string) string {
+	feedURL := fmt.Sprintf("%s/%s.xml", strings.TrimRight(hostname, "/"), feedID)
+	return itunes.GUID(feedURL)
 }
 
 func EpisodeBaseName(feedConfig *Config, episode *model.Episode) string {

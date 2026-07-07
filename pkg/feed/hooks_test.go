@@ -1,13 +1,16 @@
 package feed
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +30,7 @@ func TestExecuteHook_WriteEnvToFile(t *testing.T) {
 		"TEST_VAR=test-value",
 	}
 
-	err := hook.Invoke(env)
+	err := hook.Invoke(context.Background(), env)
 	require.NoError(t, err)
 
 	// Read the file and verify contents
@@ -82,7 +85,7 @@ func TestExecuteHook_CornerCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.hook.Invoke(tt.env)
+			err := tt.hook.Invoke(context.Background(), tt.env)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -128,10 +131,30 @@ func TestExecuteHook_CurlWebhook(t *testing.T) {
 		"EPISODE_FILE=test-podcast/episode001.mp3",
 	}
 
-	err := hook.Invoke(env)
+	err := hook.Invoke(context.Background(), env)
 	assert.NoError(t, err, "Curl webhook should execute successfully")
 
 	// Verify that the request was actually made and data was received
 	assert.Equal(t, "Test Episode for Webhook", receivedData, "Server should receive the episode title")
 	assert.Contains(t, receivedHeaders["User-Agent"], "curl", "Request should be made by curl")
+}
+
+func TestExecuteHook_RespectsParentContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires /bin/sh")
+	}
+
+	hook := &ExecHook{
+		Command: []string{"sh", "-c", "sleep 5"},
+		Timeout: 60,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err := hook.Invoke(ctx, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context deadline exceeded")
+	assert.Less(t, time.Since(started), time.Second)
 }

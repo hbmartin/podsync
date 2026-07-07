@@ -66,7 +66,7 @@ func EmbedMP4Chapters(ctx context.Context, ffmpeg, mp4Path string, chapters []Ch
 		"-i", mp4Path,
 		"-i", metaFile.Name(),
 		"-map", "0",
-		"-map_metadata", "1",
+		"-map_metadata", "0",
 		"-map_chapters", "1",
 		"-codec", "copy",
 		outPath,

@@ -130,16 +130,17 @@ func TestFillEndTimes(t *testing.T) {
 	assert.Equal(t, 200.0, chapters[1].EndTime)
 	assert.Equal(t, 500.0, chapters[2].EndTime)
 
-	// Unknown total duration leaves the last end time empty
+	// Unknown total duration clamps the last end time to its start.
 	chapters = []Chapter{{StartTime: 0, Title: "A"}, {StartTime: 10, Title: "B"}}
 	fillEndTimes(chapters, 0)
 	assert.Equal(t, 10.0, chapters[0].EndTime)
-	assert.Equal(t, 0.0, chapters[1].EndTime)
+	assert.Equal(t, 10.0, chapters[1].EndTime)
 }
 
 func TestChapterImageName(t *testing.T) {
 	assert.Equal(t, "ep.chapter-01.jpg", ChapterImageName("ep", 0, 5))
 	assert.Equal(t, "ep.chapter-10.jpg", ChapterImageName("ep", 9, 10))
+	assert.Equal(t, "ep.chapter-001.jpg", ChapterImageName("ep", 0, 100))
 	assert.Equal(t, "ep.chapter-100.jpg", ChapterImageName("ep", 99, 101))
 }
 

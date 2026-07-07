@@ -518,6 +518,8 @@ func fillEndTimes(chapters []Chapter, totalDuration float64) {
 			chapters[i].EndTime = chapters[i+1].StartTime
 		} else if totalDuration > chapters[i].StartTime {
 			chapters[i].EndTime = totalDuration
+		} else {
+			chapters[i].EndTime = chapters[i].StartTime
 		}
 	}
 }

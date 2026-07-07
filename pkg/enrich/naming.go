@@ -28,7 +28,7 @@ func ChaptersJSONName(baseName string) string {
 // out of total. Numbering is 1-based and zero-padded for stable sorting.
 func ChapterImageName(baseName string, idx, total int) string {
 	width := 2
-	for limit := 100; total > limit; limit *= 10 {
+	for limit := 100; total >= limit; limit *= 10 {
 		width++
 	}
 	return fmt.Sprintf("%s.chapter-%0*d.jpg", baseName, width, idx+1)

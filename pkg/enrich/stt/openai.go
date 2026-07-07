@@ -1,7 +1,6 @@
 package stt
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,18 +48,6 @@ func (p *openAI) Transcribe(ctx context.Context, mediaPath, lang, outPath string
 	if err != nil {
 		return errors.Wrap(err, "failed to open media file")
 	}
-	defer file.Close()
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
-	part, err := writer.CreateFormFile("file", filepath.Base(mediaPath))
-	if err != nil {
-		return errors.Wrap(err, "failed to create multipart file")
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return errors.Wrap(err, "failed to read media file")
-	}
 
 	fields := map[string]string{
 		"model":           p.model,
@@ -69,17 +56,15 @@ func (p *openAI) Transcribe(ctx context.Context, mediaPath, lang, outPath string
 	if lang != "" {
 		fields["language"] = lang
 	}
-	for key, value := range fields {
-		if err := writer.WriteField(key, value); err != nil {
-			return errors.Wrap(err, "failed to write multipart field")
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return errors.Wrap(err, "failed to finalize multipart body")
-	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/audio/transcriptions", &body)
+	bodyReader, bodyWriter := io.Pipe()
+	writer := multipart.NewWriter(bodyWriter)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/audio/transcriptions", bodyReader)
 	if err != nil {
+		file.Close()
+		bodyReader.Close()
+		bodyWriter.Close()
 		return errors.Wrap(err, "failed to create request")
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -87,11 +72,28 @@ func (p *openAI) Transcribe(ctx context.Context, mediaPath, lang, outPath string
 		req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	}
 
+	writeErr := make(chan error, 1)
+	go func() {
+		defer file.Close()
+		err := writeMultipart(writer, file, filepath.Base(mediaPath), fields)
+		if err != nil {
+			bodyWriter.CloseWithError(err)
+			writeErr <- err
+			return
+		}
+		writeErr <- bodyWriter.Close()
+	}()
+
 	resp, err := p.client.Do(req)
 	if err != nil {
+		bodyReader.Close()
+		<-writeErr
 		return errors.Wrap(err, "transcription request failed")
 	}
 	defer resp.Body.Close()
+	if err := <-writeErr; err != nil {
+		return errors.Wrap(err, "failed to stream transcription request")
+	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024*1024))
 	if err != nil {
@@ -113,6 +115,26 @@ func (p *openAI) Transcribe(ctx context.Context, mediaPath, lang, outPath string
 	}
 
 	return os.WriteFile(outPath, []byte(vtt), 0o644) //nolint:gosec // served publicly anyway
+}
+
+func writeMultipart(writer *multipart.Writer, file *os.File, filename string, fields map[string]string) error {
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return errors.Wrap(err, "failed to create multipart file")
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return errors.Wrap(err, "failed to read media file")
+	}
+
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return errors.Wrap(err, "failed to write multipart field")
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return errors.Wrap(err, "failed to finalize multipart body")
+	}
+	return nil
 }
 
 // vttFromJSONResponse synthesizes a VTT file from an OpenAI JSON or

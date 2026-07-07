@@ -5,11 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
 	"github.com/mxpv/podsync/pkg/feed"
 )
+
+const helperTimeout = 30 * time.Minute
 
 // Toolset holds the resolved paths of the optional external helper tools.
 // An empty field means the tool is unavailable; the corresponding feature
@@ -69,6 +72,12 @@ func resolveBinary(name string) string {
 // runTool executes an external helper with a timeout, returning combined
 // output for error reporting.
 func runTool(ctx context.Context, env []string, name string, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, helperTimeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, name, args...)
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)

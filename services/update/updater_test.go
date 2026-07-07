@@ -444,19 +444,25 @@ func TestCleanup_DeletesSidecars(t *testing.T) {
 			ChapterImages: []string{"old.chapter-01.jpg"},
 		},
 	}
+	nilEnrichmentOld := &model.Episode{
+		ID:      "nil-enrichment-old",
+		Status:  model.EpisodeDownloaded,
+		PubDate: time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
 	recent := &model.Episode{
 		ID:      "recent",
 		Status:  model.EpisodeDownloaded,
 		PubDate: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {old, recent}}}
+	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {old, nilEnrichmentOld, recent}}}
 
 	fs := &testFS{files: map[string][]byte{
-		"feed1/old.mp4":            []byte("x"),
-		"feed1/old.vtt":            []byte("x"),
-		"feed1/old.chapters.json":  []byte("x"),
-		"feed1/old.chapter-01.jpg": []byte("x"),
-		"feed1/recent.mp4":         []byte("x"),
+		"feed1/old.mp4":                []byte("x"),
+		"feed1/old.vtt":                []byte("x"),
+		"feed1/old.chapters.json":      []byte("x"),
+		"feed1/old.chapter-01.jpg":     []byte("x"),
+		"feed1/nil-enrichment-old.mp4": []byte("x"),
+		"feed1/recent.mp4":             []byte("x"),
 	}}
 
 	manager := newTestManager(t, db, fs, nil)
@@ -466,10 +472,13 @@ func TestCleanup_DeletesSidecars(t *testing.T) {
 
 	require.Equal(t, model.EpisodeCleaned, old.Status)
 	require.Nil(t, old.Enrichment)
+	require.Equal(t, model.EpisodeCleaned, nilEnrichmentOld.Status)
+	require.Nil(t, nilEnrichmentOld.Enrichment)
 	require.NotContains(t, fs.files, "feed1/old.mp4")
 	require.NotContains(t, fs.files, "feed1/old.vtt")
 	require.NotContains(t, fs.files, "feed1/old.chapters.json")
 	require.NotContains(t, fs.files, "feed1/old.chapter-01.jpg")
+	require.NotContains(t, fs.files, "feed1/nil-enrichment-old.mp4")
 	require.Contains(t, fs.files, "feed1/recent.mp4")
 
 	require.Equal(t, model.EpisodeDownloaded, recent.Status)

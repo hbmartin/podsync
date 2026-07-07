@@ -144,17 +144,17 @@ func (c *Config) validate() error {
 		}
 	}
 
-	for _, transcripts := range c.transcriptConfigs() {
-		for i, provider := range transcripts.STTProviders() {
+	for _, transcripts := range c.transcriptConfigRefs() {
+		for i, provider := range transcripts.config.STTProviders() {
 			if err := validateSTTProvider(provider); err != nil {
-				result = multierror.Append(result, errors.Wrapf(err, "invalid stt provider %d", i+1))
+				result = multierror.Append(result, errors.Wrapf(err, "invalid %s stt provider %d", transcripts.label, i+1))
 			}
 		}
 	}
 
-	for _, chapters := range c.chapterConfigs() {
-		if chapters.ImageMaxWidth < 0 {
-			result = multierror.Append(result, errors.New("chapters image_max_width must be positive"))
+	for _, chapters := range c.chapterConfigRefs() {
+		if chapters.config.ImageMaxWidth < 0 {
+			result = multierror.Append(result, errors.Errorf("%s image_max_width must be positive", chapters.label))
 		}
 	}
 
@@ -305,17 +305,10 @@ func (c *Config) applyEnv() {
 // transcriptConfigs returns all distinct transcript config sections
 // (global + per-feed overrides).
 func (c *Config) transcriptConfigs() []*feed.TranscriptsConfig {
-	seen := make(map[*feed.TranscriptsConfig]bool)
-	var configs []*feed.TranscriptsConfig
-	add := func(cfg *feed.TranscriptsConfig) {
-		if cfg != nil && !seen[cfg] {
-			seen[cfg] = true
-			configs = append(configs, cfg)
-		}
-	}
-	add(c.Transcripts)
-	for _, f := range c.Feeds {
-		add(f.Transcripts)
+	refs := c.transcriptConfigRefs()
+	configs := make([]*feed.TranscriptsConfig, 0, len(refs))
+	for _, ref := range refs {
+		configs = append(configs, ref.config)
 	}
 	return configs
 }
@@ -323,17 +316,52 @@ func (c *Config) transcriptConfigs() []*feed.TranscriptsConfig {
 // chapterConfigs returns all distinct chapter config sections
 // (global + per-feed overrides).
 func (c *Config) chapterConfigs() []*feed.ChaptersConfig {
-	seen := make(map[*feed.ChaptersConfig]bool)
-	var configs []*feed.ChaptersConfig
-	add := func(cfg *feed.ChaptersConfig) {
+	refs := c.chapterConfigRefs()
+	configs := make([]*feed.ChaptersConfig, 0, len(refs))
+	for _, ref := range refs {
+		configs = append(configs, ref.config)
+	}
+	return configs
+}
+
+type transcriptConfigRef struct {
+	label  string
+	config *feed.TranscriptsConfig
+}
+
+func (c *Config) transcriptConfigRefs() []transcriptConfigRef {
+	seen := make(map[*feed.TranscriptsConfig]bool)
+	var configs []transcriptConfigRef
+	add := func(label string, cfg *feed.TranscriptsConfig) {
 		if cfg != nil && !seen[cfg] {
 			seen[cfg] = true
-			configs = append(configs, cfg)
+			configs = append(configs, transcriptConfigRef{label: label, config: cfg})
 		}
 	}
-	add(c.Chapters)
-	for _, f := range c.Feeds {
-		add(f.Chapters)
+	add("transcripts", c.Transcripts)
+	for id, f := range c.Feeds {
+		add(fmt.Sprintf("feeds.%s.transcripts", id), f.Transcripts)
+	}
+	return configs
+}
+
+type chapterConfigRef struct {
+	label  string
+	config *feed.ChaptersConfig
+}
+
+func (c *Config) chapterConfigRefs() []chapterConfigRef {
+	seen := make(map[*feed.ChaptersConfig]bool)
+	var configs []chapterConfigRef
+	add := func(label string, cfg *feed.ChaptersConfig) {
+		if cfg != nil && !seen[cfg] {
+			seen[cfg] = true
+			configs = append(configs, chapterConfigRef{label: label, config: cfg})
+		}
+	}
+	add("chapters", c.Chapters)
+	for id, f := range c.Feeds {
+		add(fmt.Sprintf("feeds.%s.chapters", id), f.Chapters)
 	}
 	return configs
 }

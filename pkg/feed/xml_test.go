@@ -166,6 +166,15 @@ func TestBuildXMLPodcastNamespaceChannelTags(t *testing.T) {
 	assert.Equal(t, "youtube", out.Items[0].PodcastSocialInteracts[0].Protocol)
 }
 
+func TestBuildXMLUsesStoredPodcastGUID(t *testing.T) {
+	feed := model.Feed{PodcastGUID: "stable-guid"}
+	cfg := Config{ID: "test"}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://new-hostname/")
+	require.NoError(t, err)
+	assert.Equal(t, "stable-guid", out.PodcastGUID)
+}
+
 func TestBuildXMLPodcastMediumVideo(t *testing.T) {
 	feed := model.Feed{Format: model.FormatVideo}
 	cfg := Config{ID: "test", Format: model.FormatVideo}

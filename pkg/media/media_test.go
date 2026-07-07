@@ -49,7 +49,9 @@ func TestEmbedID3Chapters(t *testing.T) {
 
 	toc, ok := tocFrames[0].(id3v2.UnknownFrame)
 	require.True(t, ok)
-	assert.Equal(t, ctocBody("toc", []string{"chp0", "chp1"}), toc.Body)
+	ctoc, err := ctocBody("toc", []string{"chp0", "chp1"})
+	require.NoError(t, err)
+	assert.Equal(t, ctoc, toc.Body)
 
 	// Audio data must remain intact after the tag.
 	data, err := os.ReadFile(path)
@@ -68,9 +70,20 @@ func TestEmbedID3ChaptersNoChapters(t *testing.T) {
 }
 
 func TestCTOCBody(t *testing.T) {
-	body := ctocBody("toc", []string{"chp0", "chp1"})
+	body, err := ctocBody("toc", []string{"chp0", "chp1"})
+	require.NoError(t, err)
 	expected := []byte("toc\x00\x03\x02chp0\x00chp1\x00")
 	assert.Equal(t, expected, body)
+}
+
+func TestCTOCBodyRejectsTooManyChildren(t *testing.T) {
+	childIDs := make([]string, 256)
+	for i := range childIDs {
+		childIDs[i] = "chp"
+	}
+	_, err := ctocBody("toc", childIDs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most 255 chapters")
 }
 
 func TestFFMetadata(t *testing.T) {
@@ -122,6 +135,7 @@ func TestEmbedMP4Chapters(t *testing.T) {
 	videoPath := filepath.Join(dir, "test.mp4")
 	out, err := exec.Command(ffmpeg, "-y", "-loglevel", "error",
 		"-f", "lavfi", "-i", "testsrc=duration=3:size=320x180:rate=10",
+		"-metadata", "title=Original Title",
 		"-pix_fmt", "yuv420p", videoPath).CombinedOutput()
 	require.NoError(t, err, string(out))
 
@@ -137,5 +151,11 @@ func TestEmbedMP4Chapters(t *testing.T) {
 		require.NoError(t, err, string(out))
 		assert.Contains(t, string(out), "TAG:title=One")
 		assert.Contains(t, string(out), "TAG:title=Two")
+
+		out, err = exec.Command(ffprobe, "-v", "error",
+			"-show_entries", "format_tags=title",
+			"-of", "default=noprint_wrappers=1:nokey=1", videoPath).CombinedOutput()
+		require.NoError(t, err, string(out))
+		assert.Equal(t, "Original Title\n", string(out))
 	}
 }

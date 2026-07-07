@@ -204,6 +204,10 @@ func TestSetupOverwritesWhenConfirmed(t *testing.T) {
 	cfg, err := LoadConfig(path)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Feeds["music"])
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 func TestSetupFailsOnEOF(t *testing.T) {

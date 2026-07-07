@@ -80,7 +80,12 @@ var sharedHandleCache = &handleCache{m: map[string]string{}}
 // Results are cached in memory for the process lifetime.
 // See https://developers.google.com/youtube/v3/docs/channels/list#forHandle
 func (yt *YouTubeBuilder) resolveHandle(ctx context.Context, handle string) (string, error) {
-	if id, ok := yt.handles.get(handle); ok {
+	handles := yt.handles
+	if handles == nil {
+		handles = sharedHandleCache
+	}
+
+	if id, ok := handles.get(handle); ok {
 		return id, nil
 	}
 
@@ -100,9 +105,20 @@ func (yt *YouTubeBuilder) resolveHandle(ctx context.Context, handle string) (str
 		return "", errors.New("channel ID not found for handle")
 	}
 
-	yt.handles.put(handle, channelID)
+	handles.put(handle, channelID)
 
 	return channelID, nil
+}
+
+func keepLastPlaylistSnippets(snippets []*youtube.PlaylistItemSnippet, keep int) []*youtube.PlaylistItemSnippet {
+	if len(snippets) <= keep {
+		return snippets
+	}
+
+	kept := make([]*youtube.PlaylistItemSnippet, keep)
+	copy(kept, snippets[len(snippets)-keep:])
+
+	return kept
 }
 
 // Cost: 5 units (call method: 1, snippet: 2, contentDetails: 2)
@@ -477,7 +493,7 @@ func (yt *YouTubeBuilder) queryItems(ctx context.Context, feed *model.Feed) erro
 		// DESC mode walks the entire playlist and keeps only the newest
 		// PageSize items, so trim as we go to bound memory on huge playlists
 		if feed.PlaylistSort == model.SortingDesc && len(allSnippets) > feed.PageSize {
-			allSnippets = allSnippets[len(allSnippets)-feed.PageSize:]
+			allSnippets = keepLastPlaylistSnippets(allSnippets, feed.PageSize)
 		}
 
 		if (feed.PlaylistSort != model.SortingDesc && count >= feed.PageSize) || token == "" {
@@ -489,7 +505,7 @@ func (yt *YouTubeBuilder) queryItems(ctx context.Context, feed *model.Feed) erro
 		if feed.PlaylistSort != model.SortingDesc {
 			allSnippets = allSnippets[:feed.PageSize]
 		} else {
-			allSnippets = allSnippets[len(allSnippets)-feed.PageSize:]
+			allSnippets = keepLastPlaylistSnippets(allSnippets, feed.PageSize)
 		}
 	}
 

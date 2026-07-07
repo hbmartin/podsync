@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	itunes "github.com/hbmartin/podcast-rss-generator/v2"
 	"github.com/mxpv/podsync/pkg/model"
-	itunes "github.com/mxpv/podsync/pkg/rss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func TestBuildXML(t *testing.T) {
 	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
 	assert.NoError(t, err)
 
-	assert.EqualValues(t, "description", out.Description)
+	assert.EqualValues(t, "description", string(out.Description))
 	assert.EqualValues(t, "Technology", out.Category)
 
 	require.Len(t, out.ICategories, 1)
@@ -147,23 +147,23 @@ func TestBuildXMLPodcastNamespaceChannelTags(t *testing.T) {
 	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
 	require.NoError(t, err)
 
-	assert.Equal(t, itunes.GUID("http://localhost/test.xml"), out.PodcastGUID)
-	assert.Equal(t, "podcast", out.PodcastMedium)
+	assert.Equal(t, itunes.NewFeedGUID("http://localhost/test.xml"), out.PGUID)
+	assert.Equal(t, "podcast", out.PMedium)
 
-	require.NotNil(t, out.PodcastLocked)
-	assert.Equal(t, "yes", out.PodcastLocked.Value)
-	assert.Equal(t, "owner@example.com", out.PodcastLocked.Owner)
+	require.NotNil(t, out.PLocked)
+	assert.Equal(t, "yes", out.PLocked.Value)
+	assert.Equal(t, "owner@example.com", out.PLocked.Owner)
 
-	require.Len(t, out.PodcastPersons, 1)
-	assert.Equal(t, "Channel Author", out.PodcastPersons[0].Name)
-	assert.Equal(t, "host", out.PodcastPersons[0].Role)
-	assert.Equal(t, "http://example.com/avatar.jpg", out.PodcastPersons[0].Img)
-	assert.Equal(t, "https://youtube.com/channel/123", out.PodcastPersons[0].Href)
+	require.Len(t, out.PPersons, 1)
+	assert.Equal(t, "Channel Author", out.PPersons[0].Name)
+	assert.Equal(t, "host", out.PPersons[0].Role)
+	assert.Equal(t, "http://example.com/avatar.jpg", out.PPersons[0].Img)
+	assert.Equal(t, "https://youtube.com/channel/123", out.PPersons[0].Href)
 
 	require.Len(t, out.Items, 1)
-	require.Len(t, out.Items[0].PodcastSocialInteracts, 1)
-	assert.Equal(t, "https://youtube.com/watch?v=1", out.Items[0].PodcastSocialInteracts[0].URI)
-	assert.Equal(t, "youtube", out.Items[0].PodcastSocialInteracts[0].Protocol)
+	require.Len(t, out.Items[0].PSocialInteracts, 1)
+	assert.Equal(t, "https://youtube.com/watch?v=1", out.Items[0].PSocialInteracts[0].URI)
+	assert.Equal(t, "youtube", out.Items[0].PSocialInteracts[0].Protocol)
 }
 
 func TestBuildXMLUsesStoredPodcastGUID(t *testing.T) {
@@ -172,7 +172,7 @@ func TestBuildXMLUsesStoredPodcastGUID(t *testing.T) {
 
 	out, err := Build(context.Background(), &feed, &cfg, "http://new-hostname/")
 	require.NoError(t, err)
-	assert.Equal(t, "stable-guid", out.PodcastGUID)
+	assert.Equal(t, "stable-guid", out.PGUID)
 }
 
 func TestBuildXMLPodcastMediumVideo(t *testing.T) {
@@ -181,8 +181,8 @@ func TestBuildXMLPodcastMediumVideo(t *testing.T) {
 
 	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
 	require.NoError(t, err)
-	assert.Equal(t, "video", out.PodcastMedium)
-	assert.Nil(t, out.PodcastLocked)
+	assert.Equal(t, "video", out.PMedium)
+	assert.Nil(t, out.PLocked)
 }
 
 func TestBuildXMLLockedOverrides(t *testing.T) {
@@ -192,16 +192,16 @@ func TestBuildXMLLockedOverrides(t *testing.T) {
 
 	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
 	require.NoError(t, err)
-	require.NotNil(t, out.PodcastLocked)
-	assert.Equal(t, "no", out.PodcastLocked.Value)
+	require.NotNil(t, out.PLocked)
+	assert.Equal(t, "no", out.PLocked.Value)
 
 	yes := true
 	cfg = Config{ID: "test", Custom: Custom{Locked: &yes}}
 	out, err = Build(context.Background(), &feed, &cfg, "http://localhost/")
 	require.NoError(t, err)
-	require.NotNil(t, out.PodcastLocked)
-	assert.Equal(t, "yes", out.PodcastLocked.Value)
-	assert.Equal(t, "", out.PodcastLocked.Owner)
+	require.NotNil(t, out.PLocked)
+	assert.Equal(t, "yes", out.PLocked.Value)
+	assert.Equal(t, "", out.PLocked.Owner)
 }
 
 func TestBuildXMLEnrichmentTags(t *testing.T) {
@@ -236,19 +236,19 @@ func TestBuildXMLEnrichmentTags(t *testing.T) {
 	require.Len(t, out.Items, 2)
 
 	enriched := out.Items[0]
-	require.Len(t, enriched.PodcastTranscripts, 2)
-	assert.Equal(t, "http://localhost/test/video1.vtt", enriched.PodcastTranscripts[0].URL)
-	assert.Equal(t, itunes.TranscriptTypeVTT, enriched.PodcastTranscripts[0].Type)
-	assert.Equal(t, "en", enriched.PodcastTranscripts[0].Language)
-	assert.Equal(t, "http://localhost/test/video1.transcript.json", enriched.PodcastTranscripts[1].URL)
-	assert.Equal(t, itunes.TranscriptTypeJSON, enriched.PodcastTranscripts[1].Type)
+	require.Len(t, enriched.PTranscripts, 2)
+	assert.Equal(t, "http://localhost/test/video1.vtt", enriched.PTranscripts[0].URL)
+	assert.Equal(t, transcriptTypeVTT, enriched.PTranscripts[0].Type)
+	assert.Equal(t, "en", enriched.PTranscripts[0].Language)
+	assert.Equal(t, "http://localhost/test/video1.transcript.json", enriched.PTranscripts[1].URL)
+	assert.Equal(t, transcriptTypeJSON, enriched.PTranscripts[1].Type)
 	assert.Equal(t, "yes", enriched.IIsClosedCaptioned)
-	require.NotNil(t, enriched.PodcastChapters)
-	assert.Equal(t, "http://localhost/test/video1.chapters.json", enriched.PodcastChapters.URL)
-	assert.Equal(t, itunes.ChaptersTypeJSON, enriched.PodcastChapters.Type)
+	require.NotNil(t, enriched.PChapters)
+	assert.Equal(t, "http://localhost/test/video1.chapters.json", enriched.PChapters.URL)
+	assert.Equal(t, chaptersTypeJSON, enriched.PChapters.Type)
 
 	bare := out.Items[1]
-	assert.Empty(t, bare.PodcastTranscripts)
-	assert.Nil(t, bare.PodcastChapters)
+	assert.Empty(t, bare.PTranscripts)
+	assert.Nil(t, bare.PChapters)
 	assert.Empty(t, bare.IIsClosedCaptioned)
 }

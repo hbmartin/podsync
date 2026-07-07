@@ -11,14 +11,20 @@ import (
 
 	"github.com/pkg/errors"
 
+	itunes "github.com/hbmartin/podcast-rss-generator/v2"
 	"github.com/mxpv/podsync/pkg/model"
-	itunes "github.com/mxpv/podsync/pkg/rss"
 )
 
 // sort.Interface implementation
 type timeSlice []*model.Episode
 
 const defaultFilenameTemplate = "{{id}}"
+
+const (
+	transcriptTypeVTT  = "text/vtt"
+	transcriptTypeJSON = "application/json"
+	chaptersTypeJSON   = "application/json+chapters"
+)
 
 var (
 	filenameTemplateTokenPattern       = regexp.MustCompile(`{{\s*([a-z_]+)\s*}}`)
@@ -83,14 +89,14 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		feedLink = cfg.Custom.Link
 	}
 
-	p := itunes.New(title, feedLink, description, &feed.PubDate, &now)
+	p := itunes.New(title, feedLink, description, feed.PubDate, now)
 	p.Generator = podsyncGenerator
 	p.AddSubTitle(title)
 	p.IAuthor = author
 	p.AddSummary(description)
 
 	if feed.PrivateFeed {
-		p.IBlock = "yes"
+		p.SetBlock(true)
 	}
 
 	if cfg.Custom.OwnerName != "" && cfg.Custom.OwnerEmail != "" {
@@ -112,26 +118,22 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		p.AddCategory(defaultCategory, cfg.Custom.Subcategories)
 	}
 
-	if cfg.Custom.Explicit {
-		p.IExplicit = "true"
-	} else {
-		p.IExplicit = "false"
-	}
+	p.SetExplicit(cfg.Custom.Explicit)
 
 	if cfg.Custom.Language != "" {
 		p.Language = cfg.Custom.Language
 	}
 
 	// Podcasting 2.0 channel tags (https://podcastindex.org/namespace/1.0)
-	p.PodcastGUID = feed.PodcastGUID
-	if p.PodcastGUID == "" {
-		p.PodcastGUID = PodcastGUID(hostname, cfg.ID)
+	p.SetPodcastGUID(feed.PodcastGUID)
+	if p.PGUID == "" {
+		p.SetPodcastGUID(PodcastGUID(hostname, cfg.ID))
 	}
 
 	if feed.Format == model.FormatVideo {
-		p.PodcastMedium = "video"
+		p.SetMedium(itunes.MediumVideo)
 	} else {
-		p.PodcastMedium = "podcast"
+		p.SetMedium(itunes.MediumPodcast)
 	}
 
 	lockedValue := ""
@@ -147,7 +149,7 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		lockedValue = "yes"
 	}
 	if lockedValue != "" {
-		p.PodcastLocked = &itunes.Locked{Owner: cfg.Custom.OwnerEmail, Value: lockedValue}
+		p.SetLocked(lockedValue == "yes", cfg.Custom.OwnerEmail)
 	}
 
 	if author != "" {
@@ -155,12 +157,7 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		if personImg == "" {
 			personImg = feed.CoverArt
 		}
-		p.PodcastPersons = append(p.PodcastPersons, &itunes.Person{
-			Role: "host",
-			Img:  personImg,
-			Href: feed.ItemURL,
-			Name: author,
-		})
+		p.AddPerson(author, "host", "", personImg, feed.ItemURL)
 	}
 
 	for _, episode := range feed.Episodes {
@@ -179,16 +176,20 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		}
 
 		item := itunes.Item{
-			GUID:        episode.ID,
-			Link:        episode.VideoURL,
-			Title:       episode.Title,
-			Description: episode.Description,
-			ISubtitle:   episode.Title,
+			GUID:      episode.ID,
+			Link:      episode.VideoURL,
+			Title:     episode.Title,
+			ISubtitle: episode.Title,
 			// Some app prefer 1-based order
 			IOrder: strconv.Itoa(i + 1),
 		}
 
-		item.AddPubDate(&episode.PubDate)
+		description := episode.Description
+		if description == "" {
+			description = " "
+		}
+		item.AddDescription(description)
+		item.AddPubDate(episode.PubDate)
 		item.AddSummary(episode.Description)
 		item.AddImage(episode.Thumbnail)
 		item.AddDuration(episode.Duration)
@@ -211,50 +212,36 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 
 		if enrichment := episode.Enrichment; enrichment != nil {
 			if enrichment.TranscriptVTT != "" {
-				item.PodcastTranscripts = append(item.PodcastTranscripts, &itunes.Transcript{
-					URL:      fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptVTT),
-					Type:     itunes.TranscriptTypeVTT,
-					Language: enrichment.TranscriptLang,
-				})
+				item.AddTranscript(
+					fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptVTT),
+					transcriptTypeVTT,
+					enrichment.TranscriptLang,
+					"",
+				)
 			}
 			if enrichment.TranscriptJSON != "" {
-				item.PodcastTranscripts = append(item.PodcastTranscripts, &itunes.Transcript{
-					URL:      fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptJSON),
-					Type:     itunes.TranscriptTypeJSON,
-					Language: enrichment.TranscriptLang,
-				})
+				item.AddTranscript(
+					fmt.Sprintf("%s/%s", feedBaseURL, enrichment.TranscriptJSON),
+					transcriptTypeJSON,
+					enrichment.TranscriptLang,
+					"",
+				)
 			}
-			if len(item.PodcastTranscripts) > 0 {
+			if len(item.PTranscripts) > 0 {
 				item.IIsClosedCaptioned = "yes"
 			}
 			if enrichment.ChaptersJSON != "" {
-				item.PodcastChapters = &itunes.Chapters{
-					URL:  fmt.Sprintf("%s/%s", feedBaseURL, enrichment.ChaptersJSON),
-					Type: itunes.ChaptersTypeJSON,
-				}
+				item.AddChapters(fmt.Sprintf("%s/%s", feedBaseURL, enrichment.ChaptersJSON), chaptersTypeJSON)
 			}
 		}
 
 		if episode.VideoURL != "" {
-			item.PodcastSocialInteracts = []*itunes.SocialInteract{{
-				URI: episode.VideoURL,
-				// The spec's protocol slug list has no entry for video
-				// platforms; use the provider name so apps that only look
-				// at the URI still work.
-				Protocol: strings.ToLower(string(feed.Provider)),
-			}}
+			// The spec's protocol slug list has no entry for video platforms;
+			// use the provider name so apps that only look at the URI still work.
+			item.AddSocialInteract(episode.VideoURL, strings.ToLower(string(feed.Provider)), "")
 		}
 
-		// p.AddItem requires description to be not empty, use workaround
-		if item.Description == "" {
-			item.Description = " "
-		}
-
-		if cfg.Custom.Explicit {
-			item.IExplicit = "true"
-		} else {
-			item.IExplicit = "false"
-		}
+		item.SetExplicit(cfg.Custom.Explicit)
 
 		if _, err := p.AddItem(item); err != nil {
 			return nil, errors.Wrapf(err, "failed to add item to podcast (id %q)", episode.ID)
@@ -291,13 +278,13 @@ func EnclosureFromExtension(feedConfig *Config) itunes.EnclosureType {
 	case "epub":
 		return itunes.EPUB
 	default:
-		return -1
+		return itunes.EnclosureUnknown
 	}
 }
 
 func PodcastGUID(hostname, feedID string) string {
 	feedURL := fmt.Sprintf("%s/%s.xml", strings.TrimRight(hostname, "/"), feedID)
-	return itunes.GUID(feedURL)
+	return itunes.NewFeedGUID(feedURL)
 }
 
 func EpisodeBaseName(feedConfig *Config, episode *model.Episode) string {

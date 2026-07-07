@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	itunes "github.com/eduncan911/podcast"
 	"github.com/mxpv/podsync/pkg/model"
+	itunes "github.com/mxpv/podsync/pkg/rss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,4 +118,128 @@ func TestEpisodeNameWithCustomExtensionNormalization(t *testing.T) {
 
 	cfg.CustomFormat.Extension = "../bad"
 	assert.Equal(t, "abc123.mp4", EpisodeName(cfg, episode))
+}
+
+func TestBuildXMLPodcastNamespaceChannelTags(t *testing.T) {
+	feed := model.Feed{
+		Format:   model.FormatAudio,
+		Provider: model.ProviderYoutube,
+		Author:   "Channel Author",
+		CoverArt: "http://example.com/avatar.jpg",
+		ItemURL:  "https://youtube.com/channel/123",
+		Episodes: []*model.Episode{
+			{
+				ID:          "1",
+				Status:      model.EpisodeDownloaded,
+				Title:       "title",
+				Description: "description",
+				VideoURL:    "https://youtube.com/watch?v=1",
+			},
+		},
+	}
+
+	cfg := Config{
+		ID:     "test",
+		Format: model.FormatAudio,
+		Custom: Custom{OwnerName: "Owner", OwnerEmail: "owner@example.com"},
+	}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+
+	assert.Equal(t, itunes.GUID("http://localhost/test.xml"), out.PodcastGUID)
+	assert.Equal(t, "podcast", out.PodcastMedium)
+
+	require.NotNil(t, out.PodcastLocked)
+	assert.Equal(t, "yes", out.PodcastLocked.Value)
+	assert.Equal(t, "owner@example.com", out.PodcastLocked.Owner)
+
+	require.Len(t, out.PodcastPersons, 1)
+	assert.Equal(t, "Channel Author", out.PodcastPersons[0].Name)
+	assert.Equal(t, "host", out.PodcastPersons[0].Role)
+	assert.Equal(t, "http://example.com/avatar.jpg", out.PodcastPersons[0].Img)
+	assert.Equal(t, "https://youtube.com/channel/123", out.PodcastPersons[0].Href)
+
+	require.Len(t, out.Items, 1)
+	require.Len(t, out.Items[0].PodcastSocialInteracts, 1)
+	assert.Equal(t, "https://youtube.com/watch?v=1", out.Items[0].PodcastSocialInteracts[0].URI)
+	assert.Equal(t, "youtube", out.Items[0].PodcastSocialInteracts[0].Protocol)
+}
+
+func TestBuildXMLPodcastMediumVideo(t *testing.T) {
+	feed := model.Feed{Format: model.FormatVideo}
+	cfg := Config{ID: "test", Format: model.FormatVideo}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+	assert.Equal(t, "video", out.PodcastMedium)
+	assert.Nil(t, out.PodcastLocked)
+}
+
+func TestBuildXMLLockedOverrides(t *testing.T) {
+	feed := model.Feed{}
+	no := false
+	cfg := Config{ID: "test", Custom: Custom{OwnerEmail: "owner@example.com", Locked: &no}}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+	require.NotNil(t, out.PodcastLocked)
+	assert.Equal(t, "no", out.PodcastLocked.Value)
+
+	yes := true
+	cfg = Config{ID: "test", Custom: Custom{Locked: &yes}}
+	out, err = Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+	require.NotNil(t, out.PodcastLocked)
+	assert.Equal(t, "yes", out.PodcastLocked.Value)
+	assert.Equal(t, "", out.PodcastLocked.Owner)
+}
+
+func TestBuildXMLEnrichmentTags(t *testing.T) {
+	feed := model.Feed{
+		Format: model.FormatAudio,
+		Episodes: []*model.Episode{
+			{
+				ID:          "video1",
+				Status:      model.EpisodeDownloaded,
+				Title:       "title",
+				Description: "description",
+				Enrichment: &model.EpisodeEnrichment{
+					TranscriptVTT:  "video1.vtt",
+					TranscriptJSON: "video1.transcript.json",
+					TranscriptLang: "en",
+					ChaptersJSON:   "video1.chapters.json",
+				},
+			},
+			{
+				ID:          "video2",
+				Status:      model.EpisodeDownloaded,
+				Title:       "title 2",
+				Description: "description 2",
+			},
+		},
+	}
+
+	cfg := Config{ID: "test", Format: model.FormatAudio}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+	require.Len(t, out.Items, 2)
+
+	enriched := out.Items[0]
+	require.Len(t, enriched.PodcastTranscripts, 2)
+	assert.Equal(t, "http://localhost/test/video1.vtt", enriched.PodcastTranscripts[0].URL)
+	assert.Equal(t, itunes.TranscriptTypeVTT, enriched.PodcastTranscripts[0].Type)
+	assert.Equal(t, "en", enriched.PodcastTranscripts[0].Language)
+	assert.Equal(t, "http://localhost/test/video1.transcript.json", enriched.PodcastTranscripts[1].URL)
+	assert.Equal(t, itunes.TranscriptTypeJSON, enriched.PodcastTranscripts[1].Type)
+	assert.Equal(t, "yes", enriched.IIsClosedCaptioned)
+	require.NotNil(t, enriched.PodcastChapters)
+	assert.Equal(t, "http://localhost/test/video1.chapters.json", enriched.PodcastChapters.URL)
+	assert.Equal(t, itunes.ChaptersTypeJSON, enriched.PodcastChapters.Type)
+
+	bare := out.Items[1]
+	assert.Empty(t, bare.PodcastTranscripts)
+	assert.Nil(t, bare.PodcastChapters)
+	assert.Empty(t, bare.IIsClosedCaptioned)
 }

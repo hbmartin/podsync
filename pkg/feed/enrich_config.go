@@ -1,0 +1,133 @@
+package feed
+
+// ToolsConfig points to the optional external helper binaries used for
+// transcript and chapter processing. Values default to the bare command
+// names, resolved via PATH. Missing tools disable the corresponding
+// functionality with a logged warning instead of failing.
+type ToolsConfig struct {
+	// Transcript2JSON is the CLI of hbmartin/podcast-transcript-convert,
+	// used to convert VTT subtitles to PodcastIndex JSON transcripts.
+	Transcript2JSON string `toml:"transcript2json"`
+	// PodcastChapters is the CLI of hbmartin/podcast-chapter-tools,
+	// used to parse chapter timestamps out of episode descriptions.
+	PodcastChapters string `toml:"podcast_chapters"`
+	// VideoToChapters is the CLI of hbmartin/video-to-chapters-with-transcript,
+	// used to generate chapters with an LLM when a video has none.
+	VideoToChapters string `toml:"video_to_chapters"`
+	// FFmpeg binary used for chapter frame extraction and MP4 chapter remuxing.
+	FFmpeg string `toml:"ffmpeg"`
+}
+
+// ApplyDefaults fills unset tool paths with the default command names.
+func (c *ToolsConfig) ApplyDefaults() {
+	if c.Transcript2JSON == "" {
+		c.Transcript2JSON = "transcript2json"
+	}
+	if c.PodcastChapters == "" {
+		c.PodcastChapters = "podcast-chapters"
+	}
+	if c.VideoToChapters == "" {
+		c.VideoToChapters = "video-to-chapters-with-transcript"
+	}
+	if c.FFmpeg == "" {
+		c.FFmpeg = "ffmpeg"
+	}
+}
+
+// TranscriptsConfig controls transcript downloading and generation.
+type TranscriptsConfig struct {
+	// Enabled toggles transcript support. Unset means enabled.
+	Enabled *bool `toml:"enabled"`
+	// Languages is the subtitle language preference list (e.g. ["en", "de"]).
+	// When empty, the feed's custom.lang is used, falling back to "en".
+	Languages []string `toml:"languages"`
+	// STT is an ordered chain of speech-to-text fallback providers used when
+	// the platform has no subtitles at all. Empty disables STT fallback.
+	STT []*STTProviderConfig `toml:"stt"`
+}
+
+// IsEnabled reports whether transcripts are enabled (default true).
+func (c *TranscriptsConfig) IsEnabled() bool {
+	return c == nil || c.Enabled == nil || *c.Enabled
+}
+
+// STT provider types.
+const (
+	STTTypeOpenAI     = "openai"
+	STTTypeWhisperCPP = "whisper_cpp"
+	STTTypeCommand    = "command"
+)
+
+// STTProviderConfig configures one speech-to-text provider in the fallback chain.
+type STTProviderConfig struct {
+	// Type is one of "openai", "whisper_cpp" or "command".
+	Type string `toml:"type"`
+
+	// BaseURL of an OpenAI-compatible API (e.g. https://api.openai.com/v1);
+	// the provider POSTs to {base_url}/audio/transcriptions. Type "openai" only.
+	BaseURL string `toml:"base_url"`
+	// APIKey for the OpenAI-compatible API. May also come from the
+	// PODSYNC_STT_API_KEY environment variable. Type "openai" only.
+	APIKey string `toml:"api_key"`
+	// Model name, e.g. "whisper-1". Type "openai" only.
+	Model string `toml:"model"`
+
+	// Binary is the whisper.cpp CLI path or name. Type "whisper_cpp" only.
+	Binary string `toml:"binary"`
+	// ModelPath is the ggml/gguf model file for whisper.cpp. Type "whisper_cpp" only.
+	ModelPath string `toml:"model_path"`
+
+	// Command to execute for type "command". It receives the environment
+	// variables PODSYNC_AUDIO_FILE, PODSYNC_TRANSCRIPT_OUTPUT and
+	// PODSYNC_LANGUAGE, and must write a WebVTT file to the output path.
+	Command []string `toml:"command"`
+
+	// Timeout in seconds for this provider (default 1800).
+	Timeout int `toml:"timeout"`
+}
+
+// ChaptersConfig controls chapter discovery, generation and images.
+type ChaptersConfig struct {
+	// Enabled toggles chapter support. Unset means enabled.
+	Enabled *bool `toml:"enabled"`
+	// ExtractImages toggles per-chapter frame extraction. Unset means enabled.
+	ExtractImages *bool `toml:"extract_images"`
+	// FetchVideoForAudio allows downloading a temporary low-resolution video
+	// for audio feeds when frames or LLM chapter generation need it.
+	// Unset means enabled.
+	FetchVideoForAudio *bool `toml:"fetch_video_for_audio"`
+	// ImageMaxWidth bounds extracted frame width in pixels (default 1280).
+	ImageMaxWidth int `toml:"image_max_width"`
+	// LLM configures AI chapter generation, which activates automatically
+	// when both API keys are present.
+	LLM LLMConfig `toml:"llm"`
+}
+
+// IsEnabled reports whether chapters are enabled (default true).
+func (c *ChaptersConfig) IsEnabled() bool {
+	return c == nil || c.Enabled == nil || *c.Enabled
+}
+
+// ImagesEnabled reports whether chapter frame extraction is enabled (default true).
+func (c *ChaptersConfig) ImagesEnabled() bool {
+	return c == nil || c.ExtractImages == nil || *c.ExtractImages
+}
+
+// VideoFetchEnabled reports whether fetching a temporary video for audio
+// feeds is allowed (default true).
+func (c *ChaptersConfig) VideoFetchEnabled() bool {
+	return c == nil || c.FetchVideoForAudio == nil || *c.FetchVideoForAudio
+}
+
+// LLMConfig holds the API keys required by video-to-chapters-with-transcript.
+type LLMConfig struct {
+	// AssemblyAIKey may also come from PODSYNC_ASSEMBLYAI_API_KEY.
+	AssemblyAIKey string `toml:"assemblyai_api_key"`
+	// GeminiKey may also come from PODSYNC_GEMINI_API_KEY.
+	GeminiKey string `toml:"gemini_api_key"`
+}
+
+// Configured reports whether LLM chapter generation can run.
+func (c LLMConfig) Configured() bool {
+	return c.AssemblyAIKey != "" && c.GeminiKey != ""
+}

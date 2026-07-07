@@ -206,7 +206,7 @@ func parseVimeoURL(parsed *url.URL) (model.Type, string, error) {
 func parseSoundcloudURL(parsed *url.URL) (model.Type, string, error) {
 	parts := strings.Split(parsed.EscapedPath(), "/")
 	if len(parts) <= 3 {
-		return "", "", errors.New("invald soundcloud link path")
+		return "", "", errors.New("invalid soundcloud link path")
 	}
 
 	var kind model.Type
@@ -229,7 +229,7 @@ func parseTwitchURL(parsed *url.URL) (model.Type, string, error) {
 	path := parsed.EscapedPath()
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 {
-		return "", "", errors.Errorf("invald twitch user path: %s", path)
+		return "", "", errors.Errorf("invalid twitch user path: %s", path)
 	}
 
 	kind := model.TypeUser

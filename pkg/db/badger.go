@@ -73,7 +73,7 @@ func NewBadger(config *Config) (*Badger, error) {
 		return nil, errors.Wrap(err, "failed to read database version")
 	}
 
-	return &Badger{db: db}, nil
+	return storage, nil
 }
 
 func (b *Badger) Close() error {

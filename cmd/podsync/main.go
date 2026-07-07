@@ -11,6 +11,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 	"github.com/mxpv/podsync/pkg/builder"
+	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
 	"github.com/mxpv/podsync/services/migrate"
@@ -186,8 +187,11 @@ func main() {
 		keys[name] = provider
 	}
 
+	log.Debug("creating episode enricher")
+	enricher := enrich.New(cfg.Tools)
+
 	log.Debug("creating update manager")
-	manager, err := update.NewUpdater(cfg.Feeds, keys, cfg.Server.Hostname, downloader, database, storage)
+	manager, err := update.NewUpdater(cfg.Feeds, keys, cfg.Server.Hostname, downloader, enricher, database, storage)
 	if err != nil {
 		log.WithError(err).Fatal("failed to create updater")
 	}

@@ -51,6 +51,14 @@ func (c *TranscriptsConfig) IsEnabled() bool {
 	return c == nil || c.Enabled == nil || *c.Enabled
 }
 
+// STTProviders returns the configured STT fallback chain, if any.
+func (c *TranscriptsConfig) STTProviders() []*STTProviderConfig {
+	if c == nil {
+		return nil
+	}
+	return c.STT
+}
+
 // STT provider types.
 const (
 	STTTypeOpenAI     = "openai"
@@ -117,6 +125,27 @@ func (c *ChaptersConfig) ImagesEnabled() bool {
 // feeds is allowed (default true).
 func (c *ChaptersConfig) VideoFetchEnabled() bool {
 	return c == nil || c.FetchVideoForAudio == nil || *c.FetchVideoForAudio
+}
+
+// ImageWidth returns the maximum chapter image width (default 1280).
+func (c *ChaptersConfig) ImageWidth() int {
+	if c == nil || c.ImageMaxWidth <= 0 {
+		return 1280
+	}
+	return c.ImageMaxWidth
+}
+
+// LLMConfigured reports whether LLM chapter generation can run.
+func (c *ChaptersConfig) LLMConfigured() bool {
+	return c != nil && c.LLM.Configured()
+}
+
+// LLMSettings returns the LLM configuration (zero value when unset).
+func (c *ChaptersConfig) LLMSettings() LLMConfig {
+	if c == nil {
+		return LLMConfig{}
+	}
+	return c.LLM
 }
 
 // LLMConfig holds the API keys required by video-to-chapters-with-transcript.

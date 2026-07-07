@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -205,7 +204,25 @@ func (dl *YoutubeDl) PlaylistMetadata(ctx context.Context, url string) (metadata
 	return playlistMetadata, nil
 }
 
-func (dl *YoutubeDl) Download(ctx context.Context, feedConfig *feed.Config, episode *model.Episode) (r io.ReadCloser, err error) {
+// DownloadOptions control which sidecar files and embedded metadata are
+// requested from yt-dlp in addition to the media itself.
+type DownloadOptions struct {
+	// WriteInfoJSON requests a .info.json metadata sidecar (contains chapters).
+	WriteInfoJSON bool
+	// Subtitles requests subtitle sidecars in WebVTT format. Creator-uploaded
+	// subtitles are preferred, with auto-generated captions as a fallback.
+	Subtitles bool
+	// SubLangs is the subtitle language preference list (e.g. ["en", "de"]).
+	SubLangs []string
+	// EmbedMetadata embeds standard tags and the thumbnail into the media file.
+	EmbedMetadata bool
+	// EmbedChapters embeds chapter markers into the media container.
+	// Only effective for containers that support them (e.g. MP4); it must not
+	// be set for MP3 downloads.
+	EmbedChapters bool
+}
+
+func (dl *YoutubeDl) Download(ctx context.Context, feedConfig *feed.Config, episode *model.Episode, opts DownloadOptions) (r *DownloadResult, err error) {
 	tmpDir, err := os.MkdirTemp("", "podsync-")
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get temp dir for download")
@@ -224,7 +241,7 @@ func (dl *YoutubeDl) Download(ctx context.Context, feedConfig *feed.Config, epis
 	// filePath with YoutubeDl template format
 	filePath := filepath.Join(tmpDir, fmt.Sprintf("%s.%s", baseName, "%(ext)s"))
 
-	args := buildArgs(feedConfig, episode, filePath)
+	args := buildArgs(feedConfig, episode, filePath, opts)
 
 	dl.updateLock.Lock()
 	defer dl.updateLock.Unlock()
@@ -245,12 +262,58 @@ func (dl *YoutubeDl) Download(ctx context.Context, feedConfig *feed.Config, epis
 
 	// filePath now with the final extension
 	filePath = filepath.Join(tmpDir, feed.EpisodeName(feedConfig, episode))
-	f, err := os.Open(filePath)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to open downloaded file")
+	if _, err = os.Stat(filePath); err != nil {
+		return nil, errors.Wrap(err, "failed to find downloaded file")
 	}
 
-	return &tempFile{File: f, dir: tmpDir}, nil
+	infoJSON, subtitles := discoverSidecars(tmpDir, baseName)
+
+	return &DownloadResult{
+		MediaPath: filePath,
+		InfoJSON:  infoJSON,
+		Subtitles: subtitles,
+		dir:       tmpDir,
+	}, nil
+}
+
+// FetchVideo downloads a low resolution MP4 of the episode into dir and
+// returns its path. It is used to extract chapter frames (and feed AI
+// chapter generation) for audio feeds, where the primary download has no
+// video track. The caller owns dir and is responsible for cleanup.
+func (dl *YoutubeDl) FetchVideo(ctx context.Context, episode *model.Episode, dir string) (string, error) {
+	const baseName = "podsync-chapter-video"
+
+	outputTemplate := filepath.Join(dir, baseName+".%(ext)s")
+	args := []string{
+		"--format", "best[height<=720][ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+		"--output", outputTemplate,
+		episode.VideoURL,
+	}
+
+	dl.updateLock.Lock()
+	defer dl.updateLock.Unlock()
+
+	output, err := dl.exec(ctx, args...)
+	if err != nil {
+		if strings.Contains(output, "HTTP Error 429") {
+			return "", ErrTooManyRequests
+		}
+		log.Error(output)
+		return "", errors.New(output)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to scan dir for downloaded video")
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, baseName+".") && !strings.HasSuffix(name, ".part") {
+			return filepath.Join(dir, name), nil
+		}
+	}
+
+	return "", errors.New("downloaded video file not found")
 }
 
 func (dl *YoutubeDl) exec(ctx context.Context, args ...string) (string, error) {
@@ -266,7 +329,7 @@ func (dl *YoutubeDl) exec(ctx context.Context, args ...string) (string, error) {
 	return string(output), nil
 }
 
-func buildArgs(feedConfig *feed.Config, episode *model.Episode, outputFilePath string) []string {
+func buildArgs(feedConfig *feed.Config, episode *model.Episode, outputFilePath string, opts DownloadOptions) []string {
 	var args []string
 
 	switch feedConfig.Format {
@@ -294,6 +357,27 @@ func buildArgs(feedConfig *feed.Config, episode *model.Episode, outputFilePath s
 
 	default:
 		args = append(args, "--audio-format", feedConfig.CustomFormat.Extension, "--format", feedConfig.CustomFormat.YouTubeDLFormat)
+	}
+
+	if opts.WriteInfoJSON {
+		args = append(args, "--write-info-json")
+	}
+
+	if opts.Subtitles {
+		// Prefer creator-uploaded subtitles; yt-dlp falls back to
+		// auto-generated captions for languages without uploaded ones.
+		args = append(args, "--write-subs", "--write-auto-subs", "--convert-subs", "vtt")
+		if len(opts.SubLangs) > 0 {
+			args = append(args, "--sub-langs", strings.Join(opts.SubLangs, ","))
+		}
+	}
+
+	if opts.EmbedMetadata {
+		args = append(args, "--embed-metadata", "--embed-thumbnail")
+	}
+
+	if opts.EmbedChapters {
+		args = append(args, "--embed-chapters")
 	}
 
 	// Insert additional per-feed youtube-dl arguments

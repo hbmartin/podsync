@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/mxpv/podsync/pkg/builder"
 	"github.com/mxpv/podsync/pkg/db"
+	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/fs"
 	"github.com/mxpv/podsync/pkg/model"
@@ -22,8 +24,14 @@ import (
 )
 
 type Downloader interface {
-	Download(ctx context.Context, feedConfig *feed.Config, episode *model.Episode) (io.ReadCloser, error)
+	Download(ctx context.Context, feedConfig *feed.Config, episode *model.Episode, opts ytdl.DownloadOptions) (*ytdl.DownloadResult, error)
+	FetchVideo(ctx context.Context, episode *model.Episode, dir string) (string, error)
 	PlaylistMetadata(ctx context.Context, url string) (metadata ytdl.PlaylistMetadata, err error)
+}
+
+// Enricher generates transcript/chapter sidecars for downloaded episodes.
+type Enricher interface {
+	Enrich(ctx context.Context, req enrich.Request) (enrich.Result, error)
 }
 
 type TokenList []string
@@ -31,6 +39,7 @@ type TokenList []string
 type Manager struct {
 	hostname   string
 	downloader Downloader
+	enricher   Enricher
 	db         db.Storage
 	fs         fs.Storage
 	feeds      map[string]*feed.Config
@@ -42,12 +51,14 @@ func NewUpdater(
 	keys map[model.Provider]feed.KeyProvider,
 	hostname string,
 	downloader Downloader,
+	enricher Enricher,
 	db db.Storage,
 	fs fs.Storage,
 ) (*Manager, error) {
 	return &Manager{
 		hostname:   hostname,
 		downloader: downloader,
+		enricher:   enricher,
 		db:         db,
 		fs:         fs,
 		feeds:      feeds,
@@ -245,7 +256,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		// while still being processed by youtube-dl (e.g. a file is being downloaded from YT or encoding in progress)
 
 		logger.Infof("! downloading episode %s", episode.VideoURL)
-		tempFile, err := u.downloader.Download(ctx, feedConfig, episode)
+		result, err := u.downloader.Download(ctx, feedConfig, episode, downloadOptions(feedConfig))
 		if err != nil {
 			// YouTube might block host with HTTP Error 429: Too Many Requests
 			// We still need to generate XML, so just stop sending download requests and
@@ -282,13 +293,39 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			continue
 		}
 
+		// Enrich the episode with transcripts and chapters before copying,
+		// since chapter embedding modifies the media file in place. This is
+		// best effort: failures are logged and the episode is published
+		// without the missing pieces (enrichment is attempted exactly once).
+		var enrichment *model.EpisodeEnrichment
+		var sidecars []string
+		if u.enricher != nil {
+			enrichResult, enrichErr := u.enricher.Enrich(ctx, u.enrichRequest(feedConfig, episode, result))
+			if enrichErr != nil {
+				logger.WithError(enrichErr).Warn("episode enrichment incomplete")
+			}
+			enrichment = enrichResult.Enrichment()
+			sidecars = enrichResult.LocalFiles()
+		}
+
 		logger.Debug("copying file")
-		fileSize, err := u.fs.Create(ctx, fmt.Sprintf("%s/%s", feedID, episodeName), tempFile)
-		tempFile.Close()
+		mediaFile, err := result.Open()
 		if err != nil {
+			result.Close()
+			logger.WithError(err).Error("failed to open downloaded file")
+			return err
+		}
+
+		fileSize, err := u.fs.Create(ctx, fmt.Sprintf("%s/%s", feedID, episodeName), mediaFile)
+		mediaFile.Close()
+		if err != nil {
+			result.Close()
 			logger.WithError(err).Error("failed to copy file")
 			return err
 		}
+
+		enrichment = u.copySidecars(ctx, feedID, sidecars, enrichment, logger)
+		result.Close()
 
 		// Execute post episode download hooks
 		if len(feedConfig.PostEpisodeDownload) > 0 {
@@ -313,6 +350,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
 			episode.Size = fileSize
 			episode.Status = model.EpisodeDownloaded
+			episode.Enrichment = enrichment
 			return nil
 		}); err != nil {
 			return err
@@ -323,6 +361,114 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 
 	log.Infof("downloaded %d episode(s)", downloaded)
 	return nil
+}
+
+// downloadOptions derives yt-dlp sidecar/embedding options from the feed's
+// transcript and chapter configuration.
+func downloadOptions(feedConfig *feed.Config) ytdl.DownloadOptions {
+	opts := ytdl.DownloadOptions{
+		// Standard tags and cover art make downloaded files look right in
+		// any player, not only podcast apps.
+		EmbedMetadata: feedConfig.Format == model.FormatAudio || feedConfig.Format == model.FormatVideo,
+	}
+
+	if feedConfig.Transcripts.IsEnabled() {
+		opts.Subtitles = true
+		opts.SubLangs = enrich.TranscriptLanguages(feedConfig)
+	}
+
+	if feedConfig.Chapters.IsEnabled() {
+		opts.WriteInfoJSON = true
+		// MP4 containers support chapter markers natively; MP3 chapters are
+		// embedded separately as ID3 frames after download.
+		opts.EmbedChapters = feedConfig.Format == model.FormatVideo
+	}
+
+	return opts
+}
+
+// enrichRequest assembles the enrichment input for a downloaded episode.
+func (u *Manager) enrichRequest(feedConfig *feed.Config, episode *model.Episode, result *ytdl.DownloadResult) enrich.Request {
+	req := enrich.Request{
+		FeedConfig: feedConfig,
+		Episode:    episode,
+		MediaPath:  result.MediaPath,
+		InfoJSON:   result.InfoJSON,
+		Subtitles:  result.Subtitles,
+		WorkDir:    result.Dir(),
+		BaseName:   feed.EpisodeBaseName(feedConfig, episode),
+		BaseURL:    fmt.Sprintf("%s/%s", strings.TrimRight(u.hostname, "/"), feedConfig.ID),
+	}
+
+	// Audio feeds have no video track; allow the enricher to fetch a
+	// temporary low resolution video for chapter frames and AI chapter
+	// generation, unless disabled.
+	if feedConfig.Format != model.FormatVideo && feedConfig.Chapters.VideoFetchEnabled() {
+		dir := result.Dir()
+		req.FetchVideo = func(ctx context.Context) (string, error) {
+			return u.downloader.FetchVideo(ctx, episode, dir)
+		}
+	}
+
+	return req
+}
+
+// copySidecars uploads enrichment sidecar files to storage and prunes
+// episode metadata entries for files that failed to copy, so the feed never
+// references missing files. Chapter images are kept for cleanup tracking
+// even if the chapters JSON was dropped.
+func (u *Manager) copySidecars(ctx context.Context, feedID string, sidecars []string, enrichment *model.EpisodeEnrichment, logger *log.Entry) *model.EpisodeEnrichment {
+	if enrichment == nil {
+		return nil
+	}
+
+	copied := make(map[string]bool, len(sidecars))
+	for _, localPath := range sidecars {
+		name := filepath.Base(localPath)
+
+		f, err := os.Open(localPath)
+		if err != nil {
+			logger.WithError(err).Errorf("failed to open sidecar file %q", name)
+			continue
+		}
+
+		_, err = u.fs.Create(ctx, fmt.Sprintf("%s/%s", feedID, name), f)
+		f.Close()
+		if err != nil {
+			logger.WithError(err).Errorf("failed to copy sidecar file %q", name)
+			continue
+		}
+
+		copied[name] = true
+	}
+
+	if !copied[enrichment.TranscriptVTT] {
+		enrichment.TranscriptVTT = ""
+	}
+	if !copied[enrichment.TranscriptJSON] {
+		enrichment.TranscriptJSON = ""
+	}
+	if enrichment.TranscriptVTT == "" && enrichment.TranscriptJSON == "" {
+		enrichment.TranscriptLang = ""
+		enrichment.TranscriptSource = ""
+	}
+	if !copied[enrichment.ChaptersJSON] {
+		enrichment.ChaptersJSON = ""
+		enrichment.ChaptersSource = ""
+	}
+
+	images := enrichment.ChapterImages[:0]
+	for _, image := range enrichment.ChapterImages {
+		if copied[image] {
+			images = append(images, image)
+		}
+	}
+	enrichment.ChapterImages = images
+
+	if len(enrichment.SidecarFiles()) == 0 {
+		return nil
+	}
+	return enrichment
 }
 
 func (u *Manager) buildXML(ctx context.Context, feedConfig *feed.Config) error {
@@ -426,10 +572,20 @@ func (u *Manager) cleanup(ctx context.Context, feedConfig *feed.Config) error {
 			logger.WithField("episode_id", episode.ID).Info("episode was not found - file does not exist")
 		}
 
+		// Delete transcript/chapter sidecar files along with the media
+		for _, sidecar := range episode.Enrichment.SidecarFiles() {
+			sidecarPath := fmt.Sprintf("%s/%s", feedConfig.ID, sidecar)
+			if err := u.fs.Delete(ctx, sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				logger.WithError(err).Errorf("failed to delete sidecar file: %s", sidecarPath)
+				result = multierror.Append(result, errors.Wrapf(err, "failed to delete sidecar: %s", sidecarPath))
+			}
+		}
+
 		if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
 			episode.Status = model.EpisodeCleaned
 			episode.Title = ""
 			episode.Description = ""
+			episode.Enrichment = nil
 			return nil
 		}); err != nil {
 			result = multierror.Append(result, errors.Wrapf(err, "failed to set state for cleaned episode: %s", episode.ID))

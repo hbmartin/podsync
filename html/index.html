@@ -790,9 +790,16 @@
          * @returns {string} HTML-escaped text
          */
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML;
+            return String(text == null ? '' : text).replace(/[&<>"']/g, function(match) {
+                switch (match) {
+                    case '&': return '&amp;';
+                    case '<': return '&lt;';
+                    case '>': return '&gt;';
+                    case '"': return '&quot;';
+                    case "'": return '&#39;';
+                    default: return match;
+                }
+            });
         }
 
         /**
@@ -839,6 +846,7 @@
 
                 status.classList.add('d-none');
                 results.innerHTML = data.results.map(renderSearchResult).join('');
+                bindSearchResultActions(results);
             } catch (error) {
                 console.error('Search error:', error);
                 status.textContent = 'Search request failed: ' + error.message;
@@ -875,7 +883,7 @@
                             Add to config.toml:
                             <code>[feeds.${escapeHtml(result.feed_id)}]</code>
                             <code>url = "${escapeHtml(result.url)}"</code>
-                            <button class="btn btn-outline-secondary btn-sm ms-1" onclick="copySearchResult(this, '${escapeHtml(result.url)}')" title="Copy source URL">
+                            <button class="btn btn-outline-secondary btn-sm ms-1 search-copy-url" data-url="${escapeHtml(result.url)}" title="Copy source URL">
                                 <i class="bi bi-clipboard"></i> Copy URL
                             </button>
                         </div>
@@ -885,6 +893,18 @@
                     </div>
                 </div>
             `;
+        }
+
+        /**
+         * Binds event handlers for rendered search result controls
+         * @param {HTMLElement} results - Search results container
+         */
+        function bindSearchResultActions(results) {
+            results.querySelectorAll('.search-copy-url').forEach(function(button) {
+                button.addEventListener('click', function() {
+                    copySearchResult(button, button.getAttribute('data-url') || '');
+                });
+            });
         }
 
         /**

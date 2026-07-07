@@ -60,13 +60,24 @@ func (s *YouTubeSearcher) Resolve(ctx context.Context, info model.Info) (*Search
 		}
 
 		item := resp.Items[0]
+		if item == nil {
+			return nil, errors.New("nil playlist item returned")
+		}
+
+		var title, description, thumbnail string
+		if item.Snippet != nil {
+			title = item.Snippet.Title
+			description = item.Snippet.Description
+			thumbnail = bestThumbnail(item.Snippet.Thumbnails)
+		}
+
 		return &SearchResult{
 			Provider:    model.ProviderYoutube,
 			Type:        model.TypePlaylist,
 			ID:          item.Id,
-			Title:       item.Snippet.Title,
-			Description: item.Snippet.Description,
-			Thumbnail:   bestThumbnail(item.Snippet.Thumbnails),
+			Title:       title,
+			Description: description,
+			Thumbnail:   thumbnail,
 			URL:         YouTubeCanonicalURL(model.TypePlaylist, item.Id),
 		}, nil
 	}
@@ -94,13 +105,24 @@ func (s *YouTubeSearcher) Resolve(ctx context.Context, info model.Info) (*Search
 	}
 
 	item := resp.Items[0]
+	if item == nil {
+		return nil, errors.New("nil channel item returned")
+	}
+
+	var title, description, thumbnail string
+	if item.Snippet != nil {
+		title = item.Snippet.Title
+		description = item.Snippet.Description
+		thumbnail = bestThumbnail(item.Snippet.Thumbnails)
+	}
+
 	return &SearchResult{
 		Provider:    model.ProviderYoutube,
 		Type:        model.TypeChannel,
 		ID:          item.Id,
-		Title:       item.Snippet.Title,
-		Description: item.Snippet.Description,
-		Thumbnail:   bestThumbnail(item.Snippet.Thumbnails),
+		Title:       title,
+		Description: description,
+		Thumbnail:   thumbnail,
 		URL:         YouTubeCanonicalURL(model.TypeChannel, item.Id),
 	}, nil
 }

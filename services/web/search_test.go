@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +22,11 @@ type mockSearcher struct {
 	lastInfo     model.Info
 	lastQuery    string
 	resolveErr   error
+}
+
+type blockingSearcher struct {
+	calls   chan struct{}
+	release chan struct{}
 }
 
 func (m *mockSearcher) Resolve(_ context.Context, info model.Info) (*builder.SearchResult, error) {
@@ -58,6 +65,25 @@ func (m *mockSearcher) Search(_ context.Context, query string, _ int64) ([]build
 			ID:       "PL0987654321",
 			Title:    "Test Playlist",
 			URL:      "https://youtube.com/playlist?list=PL0987654321",
+		},
+	}, nil
+}
+
+func (m *blockingSearcher) Resolve(_ context.Context, _ model.Info) (*builder.SearchResult, error) {
+	return nil, nil
+}
+
+func (m *blockingSearcher) Search(_ context.Context, _ string, _ int64) ([]builder.SearchResult, error) {
+	m.calls <- struct{}{}
+	<-m.release
+
+	return []builder.SearchResult{
+		{
+			Provider: model.ProviderYoutube,
+			Type:     model.TypeChannel,
+			ID:       "UC1234567890",
+			Title:    "Concurrent Channel",
+			URL:      "https://youtube.com/channel/UC1234567890",
 		},
 	}, nil
 }
@@ -179,6 +205,53 @@ func TestSearchCachesResults(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, searcher.searchCalls)
+}
+
+func TestSearchDeduplicatesConcurrentLookup(t *testing.T) {
+	searcher := &blockingSearcher{
+		calls:   make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	service := newSearchService(searcher, "https://example.com", true)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := service.lookup(context.Background(), "same query")
+		errs <- err
+	}()
+
+	select {
+	case <-searcher.calls:
+	case <-time.After(time.Second):
+		t.Fatal("expected first provider lookup to start")
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := service.lookup(context.Background(), "same query")
+		errs <- err
+	}()
+
+	duplicateLookup := false
+	select {
+	case <-searcher.calls:
+		duplicateLookup = true
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(searcher.release)
+	wg.Wait()
+	close(errs)
+
+	require.False(t, duplicateLookup, "expected concurrent identical lookup to join in-flight request")
+	for err := range errs {
+		require.NoError(t, err)
+	}
 }
 
 func TestSearchWithoutSearcherReturnsBareResult(t *testing.T) {

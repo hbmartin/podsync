@@ -10,6 +10,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/mxpv/podsync/pkg/builder"
 	"github.com/mxpv/podsync/pkg/model"
@@ -53,6 +54,7 @@ type searchService struct {
 	hostname string
 	useAPI   bool
 
+	g     singleflight.Group
 	mu    sync.Mutex
 	cache map[string]searchCacheEntry
 	order []string
@@ -102,13 +104,24 @@ func (s *searchService) lookup(ctx context.Context, query string) ([]SearchFeed,
 		return results, nil
 	}
 
-	results, err := s.query(ctx, query)
+	v, err, _ := s.g.Do(query, func() (interface{}, error) {
+		if results, ok := s.cacheGet(query); ok {
+			return results, nil
+		}
+
+		results, err := s.query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+
+		s.cachePut(query, results)
+		return results, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	s.cachePut(query, results)
-	return results, nil
+	return v.([]SearchFeed), nil
 }
 
 func (s *searchService) query(ctx context.Context, query string) ([]SearchFeed, error) {

@@ -22,15 +22,7 @@ func (t *TwitchBuilder) Build(_ctx context.Context, cfg *feed.Config) (*model.Fe
 		return nil, errors.Wrap(err, "failed to parse URL")
 	}
 
-	feed := &model.Feed{
-		ItemID:    info.ItemID,
-		Provider:  info.Provider,
-		LinkType:  info.LinkType,
-		Format:    cfg.Format,
-		Quality:   cfg.Quality,
-		PageSize:  cfg.PageSize,
-		UpdatedAt: time.Now().UTC(),
-	}
+	_feed := newFeed(cfg, info)
 
 	if info.LinkType == model.TypeUser {
 		users, err := t.client.GetUsers(&helix.UsersParams{
@@ -41,12 +33,12 @@ func (t *TwitchBuilder) Build(_ctx context.Context, cfg *feed.Config) (*model.Fe
 		}
 		user := users.Data.Users[0]
 
-		feed.Title = user.DisplayName
-		feed.Author = user.DisplayName
-		feed.Description = user.Description
-		feed.ItemURL = fmt.Sprintf("https://www.twitch.tv/%s", user.Login)
-		feed.CoverArt = user.ProfileImageURL
-		feed.PubDate = user.CreatedAt.Time
+		_feed.Title = user.DisplayName
+		_feed.Author = user.DisplayName
+		_feed.Description = user.Description
+		_feed.ItemURL = fmt.Sprintf("https://www.twitch.tv/%s", user.Login)
+		_feed.CoverArt = user.ProfileImageURL
+		_feed.PubDate = user.CreatedAt.Time
 
 		isStreaming := false
 		streamID := ""
@@ -69,7 +61,6 @@ func (t *TwitchBuilder) Build(_ctx context.Context, cfg *feed.Config) (*model.Fe
 			return nil, errors.Wrapf(err, "failed to get videos for user: %s", info.ItemID)
 		}
 
-		var added = 0
 		for _, video := range videos.Data.Videos {
 			// Do not add the video of an ongoing stream because it will be incomplete
 			if !isStreaming || video.StreamID != streamID {
@@ -87,7 +78,7 @@ func (t *TwitchBuilder) Build(_ctx context.Context, cfg *feed.Config) (*model.Fe
 				}
 				durationSeconds := int64(duration.Seconds())
 
-				feed.Episodes = append(feed.Episodes, &model.Episode{
+				if addEpisode(_feed, &model.Episode{
 					ID:          video.ID,
 					Title:       fmt.Sprintf("%s (%s)", video.Title, date.Format("2006-01-02 15:04 UTC")),
 					Description: video.Description,
@@ -97,16 +88,13 @@ func (t *TwitchBuilder) Build(_ctx context.Context, cfg *feed.Config) (*model.Fe
 					VideoURL:    video.URL,
 					PubDate:     date,
 					Status:      model.EpisodeNew,
-				})
-
-				added++
-				if added >= feed.PageSize {
-					return feed, nil
+				}) {
+					return _feed, nil
 				}
 			}
 		}
 
-		return feed, nil
+		return _feed, nil
 	}
 
 	return nil, errors.New("unsupported feed type")

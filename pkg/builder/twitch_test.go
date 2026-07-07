@@ -29,11 +29,11 @@ func TestParseURL_TwitchInvalidLink(t *testing.T) {
 
 	_, err = ParseURL("https://www.twitch.tv//")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invald twitch user path")
+	require.Contains(t, err.Error(), "invalid twitch user path")
 
 	_, err = ParseURL("https://www.twitch.tv/user/extra/path")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "invald twitch user path")
+	require.Contains(t, err.Error(), "invalid twitch user path")
 }
 
 func TestNewTwitchBuilder_InvalidKey(t *testing.T) {

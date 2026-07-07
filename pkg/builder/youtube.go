@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BrianHicks/finch/duration"
@@ -42,30 +43,64 @@ type YouTubeBuilder struct {
 	client     *youtube.Service
 	key        apiKey
 	downloader Downloader
+	handles    *handleCache
 }
 
-// Cost: 100 units (call: 1, snippet: 99)
-// See https://developers.google.com/youtube/v3/docs/search/list#part
+// handleCache caches handle → channel ID mappings for the lifetime of the
+// process. A handle's channel ID never changes, and YouTubeBuilder instances
+// are recreated on every feed refresh (see services/update/updater.go), so
+// the cache is shared at package level. Mappings are independent of the API
+// key used to resolve them, so the cache is safe across key rotation.
+type handleCache struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (c *handleCache) key(handle string) string {
+	// Handles are case-insensitive and may be given with or without the @ prefix
+	return strings.ToLower(strings.TrimPrefix(handle, "@"))
+}
+
+func (c *handleCache) get(handle string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, ok := c.m[c.key(handle)]
+	return id, ok
+}
+
+func (c *handleCache) put(handle, channelID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[c.key(handle)] = channelID
+}
+
+var sharedHandleCache = &handleCache{m: map[string]string{}}
+
+// Cost: ~1 unit (channels.list with forHandle, part: id).
+// Results are cached in memory for the process lifetime.
+// See https://developers.google.com/youtube/v3/docs/channels/list#forHandle
 func (yt *YouTubeBuilder) resolveHandle(ctx context.Context, handle string) (string, error) {
-	req := yt.client.Search.List([]string{"snippet"}).
-		Q(handle).
-		Type("channel").
-		MaxResults(1)
+	if id, ok := yt.handles.get(handle); ok {
+		return id, nil
+	}
+
+	req := yt.client.Channels.List([]string{"id"}).ForHandle(handle)
 
 	resp, err := req.Context(ctx).Do(yt.key)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to search for handle: %s", handle)
+		return "", errors.Wrapf(err, "failed to resolve handle: %s", handle)
 	}
 
 	if len(resp.Items) == 0 {
 		return "", model.ErrNotFound
 	}
 
-	// Get the channel ID from the search result
-	channelID := resp.Items[0].Snippet.ChannelId
+	channelID := resp.Items[0].Id
 	if channelID == "" {
-		return "", errors.New("channel ID not found in search results")
+		return "", errors.New("channel ID not found for handle")
 	}
+
+	yt.handles.put(handle, channelID)
 
 	return channelID, nil
 }
@@ -191,7 +226,7 @@ func (yt *YouTubeBuilder) selectThumbnail(snippet *youtube.ThumbnailDetails, qua
 func (yt *YouTubeBuilder) GetVideoCount(ctx context.Context, info *model.Info) (uint64, error) {
 	switch info.LinkType {
 	case model.TypeChannel, model.TypeUser, model.TypeHandle:
-		// Cost: 3 units for channel/user, 103 units for handle (100 + 3)
+		// Cost: 3 units for channel/user, ~4 units for handle (1 + 3, first lookup only)
 		if channel, err := yt.listChannels(ctx, info.LinkType, info.ItemID, "id,statistics"); err != nil {
 			return 0, err
 		} else { // nolint:golint
@@ -218,7 +253,7 @@ func (yt *YouTubeBuilder) queryFeed(ctx context.Context, feed *model.Feed, info 
 
 	switch info.LinkType {
 	case model.TypeChannel, model.TypeUser, model.TypeHandle:
-		// Cost: 5 units for channel/user, 105 units for handle (100 + 5)
+		// Cost: 5 units for channel/user, ~6 units for handle (1 + 5, first lookup only)
 		channel, err := yt.listChannels(ctx, info.LinkType, info.ItemID, "id,snippet,contentDetails")
 		if err != nil {
 			return err
@@ -275,7 +310,7 @@ func (yt *YouTubeBuilder) queryFeed(ctx context.Context, feed *model.Feed, info 
 		}
 		log.Infof("Playlist metadata: %v", metadata)
 		if len(metadata.Thumbnails) > 0 {
-			// best qualtiy thumbnail is the last one
+			// best quality thumbnail is the last one
 			feed.CoverArt = metadata.Thumbnails[len(metadata.Thumbnails)-1].Url
 		} else {
 			thumbnails = playlist.Snippet.Thumbnails
@@ -374,7 +409,7 @@ func (yt *YouTubeBuilder) queryVideoDescriptions(ctx context.Context, playlist m
 				return errors.Wrapf(err, "failed to parse video publish date: %s", dateStr)
 			}
 
-			// Sometimes YouTube retrun empty content defailt, use arbitrary one
+			// Sometimes YouTube returns empty content details, use an arbitrary one
 			var seconds int64 = 1
 			if video.ContentDetails != nil {
 				// Parse duration
@@ -391,7 +426,9 @@ func (yt *YouTubeBuilder) queryVideoDescriptions(ctx context.Context, playlist m
 				size  = yt.getSize(seconds, feed)
 			)
 
-			feed.Episodes = append(feed.Episodes, &model.Episode{
+			// YouTube trims the episode list to the page size in Build,
+			// after sorting, so ignore the page-size signal here.
+			_ = addEpisode(feed, &model.Episode{
 				ID:          video.Id,
 				Title:       snippet.Title,
 				Description: snippet.Description,
@@ -437,6 +474,12 @@ func (yt *YouTubeBuilder) queryItems(ctx context.Context, feed *model.Feed) erro
 			count++
 		}
 
+		// DESC mode walks the entire playlist and keeps only the newest
+		// PageSize items, so trim as we go to bound memory on huge playlists
+		if feed.PlaylistSort == model.SortingDesc && len(allSnippets) > feed.PageSize {
+			allSnippets = allSnippets[len(allSnippets)-feed.PageSize:]
+		}
+
 		if (feed.PlaylistSort != model.SortingDesc && count >= feed.PageSize) || token == "" {
 			break
 		}
@@ -469,18 +512,7 @@ func (yt *YouTubeBuilder) Build(ctx context.Context, cfg *feed.Config) (*model.F
 		return nil, err
 	}
 
-	_feed := &model.Feed{
-		ItemID:          info.ItemID,
-		Provider:        info.Provider,
-		LinkType:        info.LinkType,
-		Format:          cfg.Format,
-		Quality:         cfg.Quality,
-		CoverArtQuality: cfg.Custom.CoverArtQuality,
-		PageSize:        cfg.PageSize,
-		PlaylistSort:    cfg.PlaylistSort,
-		PrivateFeed:     cfg.PrivateFeed,
-		UpdatedAt:       time.Now().UTC(),
-	}
+	_feed := newFeed(cfg, info)
 
 	if _feed.PageSize == 0 {
 		_feed.PageSize = maxYoutubeResults
@@ -520,5 +552,5 @@ func NewYouTubeBuilder(key string, ytdlp Downloader) (*YouTubeBuilder, error) {
 		return nil, errors.Wrap(err, "failed to create youtube client")
 	}
 
-	return &YouTubeBuilder{client: yt, key: apiKey(key), downloader: ytdlp}, nil
+	return &YouTubeBuilder{client: yt, key: apiKey(key), downloader: ytdlp, handles: sharedHandleCache}, nil
 }

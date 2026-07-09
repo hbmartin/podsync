@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -258,7 +259,7 @@ func main() {
 		CertificatePath: cfg.Server.CertificatePath,
 		KeyFilePath:     cfg.Server.KeyFilePath,
 		Stop:            stop,
-	}); err != nil && (err != context.Canceled && err != http.ErrServerClosed) {
+	}); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
 		log.WithError(err).Error("wait error")
 	}
 	log.Info("gracefully stopped")

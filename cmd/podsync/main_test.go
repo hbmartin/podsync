@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"sync"
@@ -102,7 +103,7 @@ func (s *fakeServiceServer) snapshot() (listenCalls, tlsCalls, shutdownCalls int
 func requireShutdownError(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
-	assert.True(t, err == context.Canceled || err == http.ErrServerClosed, "unexpected error: %v", err)
+	assert.True(t, errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed), "unexpected error: %v", err)
 }
 
 func TestRunServiceQueuesInitialUpdatesOnlyForIntervalFeeds(t *testing.T) {

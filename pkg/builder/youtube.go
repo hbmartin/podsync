@@ -51,7 +51,7 @@ type YouTubeBuilder struct {
 // request. Every list call costs exactly 1 unit, regardless of the requested
 // parts.
 // See https://developers.google.com/youtube/v3/determine_quota_cost
-func quotaCost(_ []string) float64 {
+func quotaCost() float64 {
 	return 1.0
 }
 
@@ -63,7 +63,7 @@ func (yt *YouTubeBuilder) recordAPI(parts []string, err error) {
 	provider := string(model.ProviderYoutube)
 	yt.recorder.AddAPIRequest(provider, err == nil)
 	// Quota is charged even for calls that fail after reaching the API.
-	yt.recorder.AddAPIQuota(provider, quotaCost(parts))
+	yt.recorder.AddAPIQuota(provider, quotaCost())
 }
 
 // handleCache caches handle → channel ID mappings for the lifetime of the

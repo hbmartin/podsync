@@ -310,7 +310,7 @@ func (u *Manager) downloadEpisode(ctx context.Context, feedConfig *feed.Config, 
 		// YouTube might block host with HTTP Error 429: Too Many Requests. We
 		// still need to generate XML, so stop sending download requests and
 		// retry next time.
-		if err == ytdl.ErrTooManyRequests {
+		if errors.Is(err, ytdl.ErrTooManyRequests) {
 			u.metrics.EpisodeDownloaded(feedID, metrics.ResultRateLimited, downloadElapsed)
 			logger.Warn("server responded with a 'Too Many Requests' error")
 			return episodeDownloadRateLimited, nil

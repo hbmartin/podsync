@@ -226,6 +226,7 @@ tls = false                            # Enable HTTPS
 certificate_path = "/path/to/cert.pem"
 key_file_path = "/path/to/key.pem"
 debug_endpoints = false                # Enable /debug/vars metrics
+metrics = false                        # Enable Prometheus /metrics endpoint (opt-in, like debug_endpoints)
 no_index = false                       # Block search engine indexing (serves robots.txt and X-Robots-Tag header)
 no_listing = false                     # Disable directory listings, return 404 for folder access
 ```
@@ -363,7 +364,33 @@ All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`add
 - `/{path}/index.html` - Web UI (if enabled, local storage only)
 - `/health` - Health check (returns 503 if episodes failed in last 24h)
 - `/debug/vars` - Runtime metrics (if `debug_endpoints = true`)
+- `/metrics` - Prometheus metrics (if `metrics = true`)
 - `/robots.txt` - Search engine blocking (if `no_index = true`)
+
+### Observability / Metrics
+
+The optional `/metrics` endpoint exposes Prometheus counters, gauges and
+histograms (`pkg/metrics`, wired through `main.go` → `services/update` and
+`services/web`). Collection is enabled only when `server.metrics = true`; when
+disabled the collector is `nil` and every recording call is a cheap no-op (all
+`*metrics.Metrics` methods are nil-safe). Exported series (namespace `podsync`):
+
+| Metric | Type | Labels | Recorded in |
+|---|---|---|---|
+| `podsync_feed_update_total` | counter | `feed_id`, `result` | `Update()` |
+| `podsync_feed_update_duration_seconds` | histogram | `feed_id` | `Update()` |
+| `podsync_episode_download_total` | counter | `feed_id`, `result` (`success`/`error`/`rate_limited`) | `downloadEpisodes()` |
+| `podsync_episode_download_duration_seconds` | histogram | `feed_id` | `downloadEpisodes()` |
+| `podsync_update_queue_depth` | gauge | – | `main.go` (cron enqueue/dequeue) |
+| `podsync_api_quota_units_total` | counter | `provider` | YouTube builder (`quotaCost` per list call) |
+| `podsync_api_requests_total` | counter | `provider`, `result` | YouTube builder |
+| `podsync_enrichment_total` | counter | `feed_id`, `artifact`, `outcome` (`produced`/`empty`) | `recordEnrichment()` |
+| `podsync_enrichment_source_total` | counter | `feed_id`, `artifact`, `source` | `recordEnrichment()` |
+| `podsync_enrichment_errors_total` | counter | `feed_id` | `recordEnrichment()` |
+
+Go runtime and process collectors are registered too. API quota units are only
+estimated for YouTube (documented per-part list costs); other providers have no
+formal quota. Keep the endpoint behind a trusted network/reverse proxy.
 
 ## Storage Behavior
 
@@ -562,6 +589,7 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - Feed generation: `pkg/feed/xml.go` (RSS, filename handling)
 - Filename migration: `services/migrate/migrate.go`
 - Web server: `services/web/server.go`
+- Metrics/observability: `pkg/metrics/metrics.go` (Prometheus collectors, nil-safe recorders); wired from `services/update/updater.go`, `pkg/builder/youtube.go` (API quota), and `cmd/podsync/main.go` (queue depth)
 - YouTube builder: `pkg/builder/youtube.go`
 - Shared builder helpers: `pkg/builder/common.go` (feed construction, episode page-size cutoff)
 - Vimeo builder: `pkg/builder/vimeo.go`

@@ -11,6 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/mxpv/podsync/pkg/db"
+	"github.com/mxpv/podsync/pkg/metrics"
 	"github.com/mxpv/podsync/pkg/model"
 )
 
@@ -51,13 +52,15 @@ type Config struct {
 	WebUIEnabled bool `toml:"web_ui"`
 	// DebugEndpoints enables /debug/vars endpoint for runtime metrics (disabled by default)
 	DebugEndpoints bool `toml:"debug_endpoints"`
+	// Metrics enables the Prometheus /metrics endpoint (disabled by default)
+	Metrics bool `toml:"metrics"`
 	// NoIndex blocks search engine indexing by serving robots.txt and adding X-Robots-Tag header (disabled by default)
 	NoIndex bool `toml:"no_index"`
 	// NoListing returns 404 for directory listings, only serving actual files (disabled by default)
 	NoListing bool `toml:"no_listing"`
 }
 
-func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
+func New(cfg Config, storage http.FileSystem, database db.Storage, m *metrics.Metrics) *Server {
 	port := cfg.Port
 	if port == 0 {
 		port = 8080
@@ -91,6 +94,16 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 	if cfg.DebugEndpoints {
 		log.Info("debug endpoints enabled at /debug/vars")
 		mux.Handle("/debug/vars", expvar.Handler())
+	}
+
+	// Optionally expose Prometheus metrics (disabled by default)
+	if cfg.Metrics {
+		if handler := m.Handler(); handler != nil {
+			log.Info("Prometheus metrics enabled at /metrics")
+			mux.Handle("/metrics", handler)
+		} else {
+			log.Warn("metrics endpoint enabled but no metrics collector was provided")
+		}
 	}
 
 	srv.Handler = mux

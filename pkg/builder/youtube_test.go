@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/option"
 	"google.golang.org/api/youtube/v3"
@@ -226,4 +227,55 @@ func TestParseURLWithHandles(t *testing.T) {
 			require.Equal(t, tt.expected.ItemID, result.ItemID)
 		})
 	}
+}
+
+func TestQuotaCost(t *testing.T) {
+	tests := []struct {
+		name  string
+		parts []string
+		want  float64
+	}{
+		{name: "handle lookup (id only)", parts: []string{"id"}, want: 1},
+		{name: "channel metadata", parts: []string{"id", "snippet", "contentDetails"}, want: 5},
+		{name: "channel statistics", parts: []string{"id", "statistics"}, want: 3},
+		{name: "playlist snippet", parts: []string{"id", "snippet"}, want: 3},
+		{name: "video descriptions", parts: []string{"id", "snippet", "contentDetails"}, want: 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, quotaCost(tt.parts))
+		})
+	}
+}
+
+type recordingAPI struct {
+	quota    float64
+	requests int
+	failures int
+}
+
+func (r *recordingAPI) AddAPIQuota(_ string, units float64) { r.quota += units }
+func (r *recordingAPI) AddAPIRequest(_ string, success bool) {
+	r.requests++
+	if !success {
+		r.failures++
+	}
+}
+
+func TestRecordAPIReportsQuotaAndRequests(t *testing.T) {
+	rec := &recordingAPI{}
+	yt := &YouTubeBuilder{recorder: rec}
+
+	yt.recordAPI([]string{"id", "snippet", "contentDetails"}, nil)
+	yt.recordAPI([]string{"id"}, assert.AnError)
+
+	require.Equal(t, float64(6), rec.quota) // 5 + 1
+	require.Equal(t, 2, rec.requests)
+	require.Equal(t, 1, rec.failures)
+
+	// A nil recorder must be a safe no-op.
+	require.NotPanics(t, func() {
+		(&YouTubeBuilder{}).recordAPI([]string{"id"}, nil)
+	})
 }

@@ -158,7 +158,7 @@ func newTestManager(t *testing.T, db *testDB, fs *testFS, dl *testDownloader) *M
 func newTestManagerWithEnricher(t *testing.T, db *testDB, fs *testFS, dl *testDownloader, enricher Enricher) *Manager {
 	t.Helper()
 
-	manager, err := NewUpdater(map[string]*feed.Config{}, nil, "http://localhost", dl, enricher, db, fs)
+	manager, err := NewUpdater(map[string]*feed.Config{}, nil, "http://localhost", dl, enricher, db, fs, nil)
 	require.NoError(t, err)
 	return manager
 }

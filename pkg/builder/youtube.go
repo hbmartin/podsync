@@ -44,6 +44,32 @@ type YouTubeBuilder struct {
 	key        apiKey
 	downloader Downloader
 	handles    *handleCache
+	recorder   APIRecorder
+}
+
+// quotaCost estimates the YouTube Data API quota units consumed by a list
+// request. Every list call costs one unit for the call itself plus two units
+// for each requested part; the "id" part is free.
+// See https://developers.google.com/youtube/v3/determine_quota_cost
+func quotaCost(parts []string) float64 {
+	cost := 1.0
+	for _, part := range parts {
+		if part != "id" {
+			cost += 2
+		}
+	}
+	return cost
+}
+
+// recordAPI reports the quota cost and outcome of a single YouTube list call.
+func (yt *YouTubeBuilder) recordAPI(parts []string, err error) {
+	if yt.recorder == nil {
+		return
+	}
+	provider := string(model.ProviderYoutube)
+	yt.recorder.AddAPIRequest(provider, err == nil)
+	// Quota is charged even for calls that fail after reaching the API.
+	yt.recorder.AddAPIQuota(provider, quotaCost(parts))
 }
 
 // handleCache caches handle → channel ID mappings for the lifetime of the
@@ -89,9 +115,11 @@ func (yt *YouTubeBuilder) resolveHandle(ctx context.Context, handle string) (str
 		return id, nil
 	}
 
-	req := yt.client.Channels.List([]string{"id"}).ForHandle(handle)
+	parts := []string{"id"}
+	req := yt.client.Channels.List(parts).ForHandle(handle)
 
 	resp, err := req.Context(ctx).Do(yt.key)
+	yt.recordAPI(parts, err)
 	if err != nil {
 		return "", errors.Wrapf(err, "failed to resolve handle: %s", handle)
 	}
@@ -124,7 +152,8 @@ func keepLastPlaylistSnippets(snippets []*youtube.PlaylistItemSnippet, keep int)
 // Cost: 5 units (call method: 1, snippet: 2, contentDetails: 2)
 // See https://developers.google.com/youtube/v3/docs/channels/list#part
 func (yt *YouTubeBuilder) listChannels(ctx context.Context, linkType model.Type, id string, parts string) (*youtube.Channel, error) {
-	req := yt.client.Channels.List(strings.Split(parts, ","))
+	partList := strings.Split(parts, ",")
+	req := yt.client.Channels.List(partList)
 
 	switch linkType {
 	case model.TypeChannel:
@@ -143,6 +172,7 @@ func (yt *YouTubeBuilder) listChannels(ctx context.Context, linkType model.Type,
 	}
 
 	resp, err := req.Context(ctx).Do(yt.key)
+	yt.recordAPI(partList, err)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to query channel")
 	}
@@ -158,7 +188,8 @@ func (yt *YouTubeBuilder) listChannels(ctx context.Context, linkType model.Type,
 // Cost: 3 units (call method: 1, snippet: 2)
 // See https://developers.google.com/youtube/v3/docs/playlists/list#part
 func (yt *YouTubeBuilder) listPlaylists(ctx context.Context, id, channelID string, parts string) (*youtube.Playlist, error) {
-	req := yt.client.Playlists.List(strings.Split(parts, ","))
+	partList := strings.Split(parts, ",")
+	req := yt.client.Playlists.List(partList)
 
 	if id != "" {
 		req = req.Id(id)
@@ -167,6 +198,7 @@ func (yt *YouTubeBuilder) listPlaylists(ctx context.Context, id, channelID strin
 	}
 
 	resp, err := req.Context(ctx).Do(yt.key)
+	yt.recordAPI(partList, err)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to query playlist")
 	}
@@ -188,12 +220,14 @@ func (yt *YouTubeBuilder) listPlaylistItems(ctx context.Context, feed *model.Fee
 		count = feed.PageSize
 	}
 
-	req := yt.client.PlaylistItems.List([]string{"id", "snippet"}).MaxResults(int64(count)).PlaylistId(feed.ItemID)
+	parts := []string{"id", "snippet"}
+	req := yt.client.PlaylistItems.List(parts).MaxResults(int64(count)).PlaylistId(feed.ItemID)
 	if pageToken != "" {
 		req = req.PageToken(pageToken)
 	}
 
 	resp, err := req.Context(ctx).Do(yt.key)
+	yt.recordAPI(parts, err)
 	if err != nil {
 		return nil, "", errors.Wrap(err, "failed to query playlist items")
 	}
@@ -391,8 +425,10 @@ func (yt *YouTubeBuilder) queryVideoDescriptions(ctx context.Context, playlist m
 	log.Debugf("Expected to make %d API calls to get the descriptions for %d episode(s).", len(idsList), len(ids))
 
 	// Loop in each slices of 50 (or less) IDs and query their description
+	parts := []string{"id", "snippet", "contentDetails"}
 	for _, idsI := range idsList {
-		req, err := yt.client.Videos.List([]string{"id", "snippet", "contentDetails"}).Id(idsI).Context(ctx).Do(yt.key)
+		req, err := yt.client.Videos.List(parts).Id(idsI).Context(ctx).Do(yt.key)
+		yt.recordAPI(parts, err)
 		if err != nil {
 			return errors.Wrap(err, "failed to query video descriptions")
 		}
@@ -558,7 +594,7 @@ func (yt *YouTubeBuilder) Build(ctx context.Context, cfg *feed.Config) (*model.F
 	return _feed, nil
 }
 
-func NewYouTubeBuilder(key string, ytdlp Downloader) (*YouTubeBuilder, error) {
+func NewYouTubeBuilder(key string, ytdlp Downloader, recorder APIRecorder) (*YouTubeBuilder, error) {
 	if key == "" {
 		return nil, errors.New("empty YouTube API key")
 	}
@@ -568,5 +604,5 @@ func NewYouTubeBuilder(key string, ytdlp Downloader) (*YouTubeBuilder, error) {
 		return nil, errors.Wrap(err, "failed to create youtube client")
 	}
 
-	return &YouTubeBuilder{client: yt, key: apiKey(key), downloader: ytdlp, handles: sharedHandleCache}, nil
+	return &YouTubeBuilder{client: yt, key: apiKey(key), downloader: ytdlp, handles: sharedHandleCache, recorder: recorder}, nil
 }

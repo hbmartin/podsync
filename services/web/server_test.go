@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mxpv/podsync/pkg/fs"
+	"github.com/mxpv/podsync/pkg/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,7 @@ func TestDebugEndpointDisabledByDefault(t *testing.T) {
 		Path: "feeds",
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
 	rec := httptest.NewRecorder()
@@ -45,7 +46,7 @@ func TestDebugEndpointEnabledWhenConfigured(t *testing.T) {
 		DebugEndpoints: true,
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
 	rec := httptest.NewRecorder()
@@ -59,13 +60,65 @@ func TestDebugEndpointEnabledWhenConfigured(t *testing.T) {
 	assert.True(t, strings.Contains(rec.Body.String(), "cmdline"))
 }
 
+func TestMetricsEndpointDisabledByDefault(t *testing.T) {
+	cfg := Config{
+		Port: 8080,
+		Path: "feeds",
+	}
+
+	srv := New(cfg, &mockFileSystem{}, nil, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	// Should return 404 when the metrics endpoint is disabled
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestMetricsEndpointEnabledWhenConfigured(t *testing.T) {
+	cfg := Config{
+		Port:    8080,
+		Path:    "feeds",
+		Metrics: true,
+	}
+
+	srv := New(cfg, &mockFileSystem{}, nil, metrics.New())
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	// Prometheus exposition always carries the Go runtime collectors.
+	assert.Contains(t, rec.Body.String(), "go_goroutines")
+}
+
+func TestMetricsEndpointNoCollector(t *testing.T) {
+	cfg := Config{
+		Port:    8080,
+		Path:    "feeds",
+		Metrics: true,
+	}
+
+	// Enabling the flag without a collector must not register the endpoint
+	// and must not panic.
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestNoIndexDisabledByDefault(t *testing.T) {
 	cfg := Config{
 		Port: 8080,
 		Path: "feeds",
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	// robots.txt should return 404 when disabled
 	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
@@ -87,7 +140,7 @@ func TestNoIndexEnabledWhenConfigured(t *testing.T) {
 		NoIndex: true,
 	}
 
-	srv := New(cfg, &mockFileSystem{}, nil)
+	srv := New(cfg, &mockFileSystem{}, nil, nil)
 
 	// robots.txt should return disallow all
 	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
@@ -121,7 +174,7 @@ func TestNoListingDisabledByDefault(t *testing.T) {
 		Path: "",
 	}
 
-	srv := New(cfg, storage, nil)
+	srv := New(cfg, storage, nil, nil)
 
 	// Accessing a directory should return 200 with directory listing
 	req := httptest.NewRequest(http.MethodGet, "/feeds/", nil)
@@ -160,7 +213,7 @@ func TestNoListingEnabledWhenConfigured(t *testing.T) {
 		Path: "",
 	}
 
-	srv := New(cfg, storage, nil)
+	srv := New(cfg, storage, nil, nil)
 
 	// Accessing a directory should return 404
 	req := httptest.NewRequest(http.MethodGet, "/feeds/", nil)

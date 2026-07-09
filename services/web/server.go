@@ -162,12 +162,16 @@ func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		log.WithError(err).Error("failed to encode health check response")
+	}
 }
 
 func robotsTxtHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	if _, err := w.Write([]byte("User-agent: *\nDisallow: /\n")); err != nil {
+		log.WithError(err).Error("failed to write robots.txt response")
+	}
 }
 
 func noIndexMiddleware(next http.Handler) http.Handler {

@@ -2,6 +2,7 @@ version: "2"
 linters:
   enable:
     - bodyclose
+    - errcheck
     - misspell
     - nakedret
     - prealloc
@@ -10,14 +11,16 @@ linters:
     - staticcheck
     - ineffassign
     - unused
-  disable:
-    - errcheck
   exclusions:
     generated: lax
     presets:
       - comments
       - common-false-positives
       - legacy
+      # std-error-handling is the targeted exclusion list that lets errcheck
+      # stay on: it skips the intentional best-effort cases the project relies
+      # on (deferred Close(), os.Remove, fmt.Fprint*, hash.Write, etc.) so that
+      # only genuinely-forgotten error checks are reported.
       - std-error-handling
     paths:
       - bin

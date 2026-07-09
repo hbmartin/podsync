@@ -230,23 +230,9 @@ func TestParseURLWithHandles(t *testing.T) {
 }
 
 func TestQuotaCost(t *testing.T) {
-	tests := []struct {
-		name  string
-		parts []string
-		want  float64
-	}{
-		{name: "handle lookup (id only)", parts: []string{"id"}, want: 1},
-		{name: "channel metadata", parts: []string{"id", "snippet", "contentDetails"}, want: 1},
-		{name: "channel statistics", parts: []string{"id", "statistics"}, want: 1},
-		{name: "playlist snippet", parts: []string{"id", "snippet"}, want: 1},
-		{name: "video descriptions", parts: []string{"id", "snippet", "contentDetails"}, want: 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, quotaCost(tt.parts))
-		})
-	}
+	// Every YouTube Data API list call costs exactly 1 unit regardless of the
+	// requested parts.
+	require.Equal(t, float64(1), quotaCost())
 }
 
 type recordingAPI struct {

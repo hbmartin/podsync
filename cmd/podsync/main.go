@@ -12,6 +12,7 @@ import (
 	"github.com/jessevdk/go-flags"
 	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
+	"github.com/mxpv/podsync/pkg/metrics"
 	"github.com/mxpv/podsync/pkg/model"
 	"github.com/mxpv/podsync/services/migrate"
 	"github.com/mxpv/podsync/services/update"
@@ -189,8 +190,16 @@ func main() {
 	log.Debug("creating episode enricher")
 	enricher := enrich.New(cfg.Tools)
 
+	// Metrics collection is opt-in; when disabled the collector is nil and all
+	// recording calls are cheap no-ops.
+	var metricsCollector *metrics.Metrics
+	if cfg.Server.Metrics {
+		log.Debug("creating metrics collector")
+		metricsCollector = metrics.New()
+	}
+
 	log.Debug("creating update manager")
-	manager, err := update.NewUpdater(cfg.Feeds, keys, cfg.Server.Hostname, downloader, enricher, database, storage)
+	manager, err := update.NewUpdater(cfg.Feeds, keys, cfg.Server.Hostname, downloader, enricher, database, storage, metricsCollector)
 	if err != nil {
 		log.WithError(err).Fatal("failed to create updater")
 	}
@@ -226,6 +235,7 @@ func main() {
 		for {
 			select {
 			case _feed := <-updates:
+				metricsCollector.SetQueueDepth(len(updates))
 				if err := manager.Update(ctx, _feed); err != nil {
 					log.WithError(err).Errorf("failed to update feed: %s", _feed.URL)
 				} else {
@@ -252,6 +262,7 @@ func main() {
 			if cronID, err = c.AddFunc(cronFeed.CronSchedule, func() {
 				log.Debugf("adding %q to update queue", cronFeed.ID)
 				updates <- cronFeed
+				metricsCollector.SetQueueDepth(len(updates))
 			}); err != nil {
 				log.WithError(err).Fatalf("can't create cron task for feed: %s", cronFeed.ID)
 			}
@@ -263,6 +274,7 @@ func main() {
 			// This prevents unwanted updates when using fixed schedules in Docker deployments
 			if !hasExplicitCronSchedule {
 				updates <- cronFeed
+				metricsCollector.SetQueueDepth(len(updates))
 			}
 		}
 
@@ -283,7 +295,7 @@ func main() {
 	}
 
 	// Run web server
-	srv := web.New(cfg.Server, storage, database)
+	srv := web.New(cfg.Server, storage, database, metricsCollector)
 
 	group.Go(func() error {
 		log.Infof("running listener at %s", srv.Addr)

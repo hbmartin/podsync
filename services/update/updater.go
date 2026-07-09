@@ -19,6 +19,7 @@ import (
 	"github.com/mxpv/podsync/pkg/enrich"
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/fs"
+	"github.com/mxpv/podsync/pkg/metrics"
 	"github.com/mxpv/podsync/pkg/model"
 	"github.com/mxpv/podsync/pkg/ytdl"
 )
@@ -44,6 +45,7 @@ type Manager struct {
 	fs         fs.Storage
 	feeds      map[string]*feed.Config
 	keys       map[model.Provider]feed.KeyProvider
+	metrics    *metrics.Metrics
 }
 
 func NewUpdater(
@@ -54,6 +56,7 @@ func NewUpdater(
 	enricher Enricher,
 	db db.Storage,
 	fs fs.Storage,
+	m *metrics.Metrics,
 ) (*Manager, error) {
 	return &Manager{
 		hostname:   hostname,
@@ -63,10 +66,11 @@ func NewUpdater(
 		fs:         fs,
 		feeds:      feeds,
 		keys:       keys,
+		metrics:    m,
 	}, nil
 }
 
-func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) error {
+func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) (err error) {
 	log.WithFields(log.Fields{
 		"feed_id": feedConfig.ID,
 		"format":  feedConfig.Format,
@@ -74,6 +78,9 @@ func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) error {
 	}).Infof("-> updating %s", feedConfig.URL)
 
 	started := time.Now()
+	defer func() {
+		u.metrics.FeedUpdated(feedConfig.ID, err, time.Since(started))
+	}()
 
 	if err := u.updateFeed(ctx, feedConfig); err != nil {
 		return errors.Wrap(err, "update failed")
@@ -119,7 +126,7 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 	}
 
 	// Create an updater for this feed type
-	provider, err := builder.New(ctx, info.Provider, keyProvider.Get(), u.downloader)
+	provider, err := builder.New(ctx, info.Provider, keyProvider.Get(), u.downloader, u.metrics)
 	if err != nil {
 		return err
 	}
@@ -274,15 +281,20 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		// while still being processed by youtube-dl (e.g. a file is being downloaded from YT or encoding in progress)
 
 		logger.Infof("! downloading episode %s", episode.VideoURL)
+		downloadStarted := time.Now()
 		result, err := u.downloader.Download(ctx, feedConfig, episode, downloadOptions(feedConfig))
+		downloadElapsed := time.Since(downloadStarted)
 		if err != nil {
 			// YouTube might block host with HTTP Error 429: Too Many Requests
 			// We still need to generate XML, so just stop sending download requests and
 			// retry next time
 			if err == ytdl.ErrTooManyRequests {
+				u.metrics.EpisodeDownloaded(feedID, metrics.ResultRateLimited, downloadElapsed)
 				logger.Warn("server responded with a 'Too Many Requests' error")
 				break
 			}
+
+			u.metrics.EpisodeDownloaded(feedID, metrics.ResultError, downloadElapsed)
 
 			// Execute episode download error hooks
 			if len(feedConfig.OnEpisodeDownloadError) > 0 {
@@ -311,6 +323,8 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			continue
 		}
 
+		u.metrics.EpisodeDownloaded(feedID, metrics.ResultSuccess, downloadElapsed)
+
 		// Enrich the episode with transcripts and chapters before copying,
 		// since chapter embedding modifies the media file in place. This is
 		// best effort: failures are logged and the episode is published
@@ -322,6 +336,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			if enrichErr != nil {
 				logger.WithError(enrichErr).Warn("episode enrichment incomplete")
 			}
+			u.recordEnrichment(feedConfig, enrichResult, enrichErr)
 			enrichment = enrichResult.Enrichment()
 			sidecars = enrichResult.LocalFiles()
 		}
@@ -429,6 +444,35 @@ func (u *Manager) enrichRequest(feedConfig *feed.Config, episode *model.Episode,
 	}
 
 	return req
+}
+
+// recordEnrichment translates an enrichment result into observability
+// metrics: whether each configured artifact was produced or came back empty,
+// which source produced it, and whether enrichment finished with an error.
+func (u *Manager) recordEnrichment(feedConfig *feed.Config, result enrich.Result, err error) {
+	feedID := feedConfig.ID
+
+	if feedConfig.Transcripts.IsEnabled() {
+		if result.TranscriptVTT != "" || result.TranscriptJSON != "" {
+			u.metrics.EnrichmentOutcome(feedID, metrics.ArtifactTranscript, metrics.OutcomeProduced)
+			u.metrics.EnrichmentSource(feedID, metrics.ArtifactTranscript, result.TranscriptSource)
+		} else {
+			u.metrics.EnrichmentOutcome(feedID, metrics.ArtifactTranscript, metrics.OutcomeEmpty)
+		}
+	}
+
+	if feedConfig.Chapters.IsEnabled() {
+		if result.ChaptersJSON != "" {
+			u.metrics.EnrichmentOutcome(feedID, metrics.ArtifactChapters, metrics.OutcomeProduced)
+			u.metrics.EnrichmentSource(feedID, metrics.ArtifactChapters, result.ChaptersSource)
+		} else {
+			u.metrics.EnrichmentOutcome(feedID, metrics.ArtifactChapters, metrics.OutcomeEmpty)
+		}
+	}
+
+	if err != nil {
+		u.metrics.EnrichmentError(feedID)
+	}
 }
 
 // copySidecars uploads enrichment sidecar files to storage and prunes

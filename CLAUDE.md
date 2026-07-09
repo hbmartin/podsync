@@ -329,10 +329,10 @@ All builders share feed construction via `pkg/builder/common.go` (`newFeed`/`add
 ### YouTube (`pkg/builder/youtube.go`)
 - **Supported**: Channels, Users, Handles (@username), Playlists
 - **Not Supported**: Live streams and Premiered videos (automatically skipped)
-- API costs: Channel/User 5 units, Handle ~6 units on first lookup (`channels.list` `forHandle`, then handle→channel ID is cached in memory for the process lifetime, so 5 units thereafter), Playlist 3 units/request
+- API costs for Podsync's YouTube `list` calls are 1 unit each. Channel/User and Playlist metadata lookups cost 1 unit; Handle feeds cost 2 units on the first lookup (`channels.list` `forHandle`, then handle→channel ID is cached in memory for the process lifetime, so 1 unit thereafter)
 - Thumbnail quality: uses maxres > high > medium > default
 - Size estimation based on duration and quality (not actual file size)
-- Supports playlist_sort for ordering; `playlist_sort = "desc"` inherently walks the entire playlist (3 units per 50-item page) because the YouTube API has no reverse pagination — memory is bounded, but API cost grows with playlist length
+- Supports playlist_sort for ordering; `playlist_sort = "desc"` inherently walks the entire playlist (1 unit per 50-item `playlistItems.list` page, plus retained `videos.list` calls) because the YouTube API has no reverse pagination — memory is bounded, but API cost grows with playlist length
 
 ### Vimeo (`pkg/builder/vimeo.go`)
 - **Supported**: Channels, Groups, Users
@@ -389,8 +389,8 @@ disabled the collector is `nil` and every recording call is a cheap no-op (all
 | `podsync_enrichment_errors_total` | counter | `feed_id` | `recordEnrichment()` |
 
 Go runtime and process collectors are registered too. API quota units are only
-estimated for YouTube (documented per-part list costs); other providers have no
-formal quota. Keep the endpoint behind a trusted network/reverse proxy.
+estimated for YouTube list calls; other providers have no formal quota. Keep the
+endpoint behind a trusted network/reverse proxy.
 
 ## Storage Behavior
 

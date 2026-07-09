@@ -47,18 +47,12 @@ type YouTubeBuilder struct {
 	recorder   APIRecorder
 }
 
-// quotaCost estimates the YouTube Data API quota units consumed by a list
-// request. Every list call costs one unit for the call itself plus two units
-// for each requested part; the "id" part is free.
+// quotaCost returns the YouTube Data API quota units consumed by a list
+// request. Every list call costs exactly 1 unit, regardless of the requested
+// parts.
 // See https://developers.google.com/youtube/v3/determine_quota_cost
-func quotaCost(parts []string) float64 {
-	cost := 1.0
-	for _, part := range parts {
-		if part != "id" {
-			cost += 2
-		}
-	}
-	return cost
+func quotaCost(_ []string) float64 {
+	return 1.0
 }
 
 // recordAPI reports the quota cost and outcome of a single YouTube list call.
@@ -102,7 +96,7 @@ func (c *handleCache) put(handle, channelID string) {
 
 var sharedHandleCache = &handleCache{m: map[string]string{}}
 
-// Cost: ~1 unit (channels.list with forHandle, part: id).
+// Cost: 1 unit (channels.list with forHandle, part: id).
 // Results are cached in memory for the process lifetime.
 // See https://developers.google.com/youtube/v3/docs/channels/list#forHandle
 func (yt *YouTubeBuilder) resolveHandle(ctx context.Context, handle string) (string, error) {
@@ -149,8 +143,8 @@ func keepLastPlaylistSnippets(snippets []*youtube.PlaylistItemSnippet, keep int)
 	return kept
 }
 
-// Cost: 5 units (call method: 1, snippet: 2, contentDetails: 2)
-// See https://developers.google.com/youtube/v3/docs/channels/list#part
+// Cost: 1 unit.
+// See https://developers.google.com/youtube/v3/docs/channels/list
 func (yt *YouTubeBuilder) listChannels(ctx context.Context, linkType model.Type, id string, parts string) (*youtube.Channel, error) {
 	partList := strings.Split(parts, ",")
 	req := yt.client.Channels.List(partList)
@@ -185,8 +179,8 @@ func (yt *YouTubeBuilder) listChannels(ctx context.Context, linkType model.Type,
 	return item, nil
 }
 
-// Cost: 3 units (call method: 1, snippet: 2)
-// See https://developers.google.com/youtube/v3/docs/playlists/list#part
+// Cost: 1 unit.
+// See https://developers.google.com/youtube/v3/docs/playlists/list
 func (yt *YouTubeBuilder) listPlaylists(ctx context.Context, id, channelID string, parts string) (*youtube.Playlist, error) {
 	partList := strings.Split(parts, ",")
 	req := yt.client.Playlists.List(partList)
@@ -211,8 +205,8 @@ func (yt *YouTubeBuilder) listPlaylists(ctx context.Context, id, channelID strin
 	return item, nil
 }
 
-// Cost: 3 units (call: 1, snippet: 2)
-// See https://developers.google.com/youtube/v3/docs/playlistItems/list#part
+// Cost: 1 unit.
+// See https://developers.google.com/youtube/v3/docs/playlistItems/list
 func (yt *YouTubeBuilder) listPlaylistItems(ctx context.Context, feed *model.Feed, pageToken string) ([]*youtube.PlaylistItem, string, error) {
 	count := maxYoutubeResults
 	if count > feed.PageSize {
@@ -276,7 +270,7 @@ func (yt *YouTubeBuilder) selectThumbnail(snippet *youtube.ThumbnailDetails, qua
 func (yt *YouTubeBuilder) GetVideoCount(ctx context.Context, info *model.Info) (uint64, error) {
 	switch info.LinkType {
 	case model.TypeChannel, model.TypeUser, model.TypeHandle:
-		// Cost: 3 units for channel/user, ~4 units for handle (1 + 3, first lookup only)
+		// Cost: 1 unit for channel/user, 2 units for handle on the first lookup.
 		if channel, err := yt.listChannels(ctx, info.LinkType, info.ItemID, "id,statistics"); err != nil {
 			return 0, err
 		} else { // nolint:golint
@@ -284,7 +278,7 @@ func (yt *YouTubeBuilder) GetVideoCount(ctx context.Context, info *model.Info) (
 		}
 
 	case model.TypePlaylist:
-		// Cost: 3 units
+		// Cost: 1 unit.
 		if playlist, err := yt.listPlaylists(ctx, info.ItemID, "", "id,contentDetails"); err != nil {
 			return 0, err
 		} else { // nolint:golint
@@ -303,7 +297,7 @@ func (yt *YouTubeBuilder) queryFeed(ctx context.Context, feed *model.Feed, info 
 
 	switch info.LinkType {
 	case model.TypeChannel, model.TypeUser, model.TypeHandle:
-		// Cost: 5 units for channel/user, ~6 units for handle (1 + 5, first lookup only)
+		// Cost: 1 unit for channel/user, 2 units for handle on the first lookup.
 		channel, err := yt.listChannels(ctx, info.LinkType, info.ItemID, "id,snippet,contentDetails")
 		if err != nil {
 			return err
@@ -335,7 +329,7 @@ func (yt *YouTubeBuilder) queryFeed(ctx context.Context, feed *model.Feed, info 
 		thumbnails = channel.Snippet.Thumbnails
 
 	case model.TypePlaylist:
-		// Cost: 3 units for playlist
+		// Cost: 1 unit.
 		playlist, err := yt.listPlaylists(ctx, info.ItemID, "", "id,snippet")
 		if err != nil {
 			return err
@@ -399,8 +393,8 @@ func (yt *YouTubeBuilder) getSize(duration int64, feed *model.Feed) int64 {
 	return duration * ldBytesPerSecond
 }
 
-// Cost: 5 units (call: 1, snippet: 2, contentDetails: 2)
-// See https://developers.google.com/youtube/v3/docs/videos/list#part
+// Cost: 1 unit per videos.list call.
+// See https://developers.google.com/youtube/v3/docs/videos/list
 func (yt *YouTubeBuilder) queryVideoDescriptions(ctx context.Context, playlist map[string]*youtube.PlaylistItemSnippet, feed *model.Feed) error {
 	// Make the list of video ids
 	ids := make([]string, 0, len(playlist))
@@ -499,8 +493,9 @@ func (yt *YouTubeBuilder) queryVideoDescriptions(ctx context.Context, playlist m
 }
 
 // Cost:
-// ASC mode = (3 units + 5 units) * X pages = 8 units per page
-// DESC mode = 3 units * (number of pages in the entire playlist) + 5 units
+// ASC mode = 2 units per page (playlistItems.list + videos.list).
+// DESC mode = 1 unit per playlistItems.list page, then 1 videos.list call for
+// each 50 retained episodes.
 func (yt *YouTubeBuilder) queryItems(ctx context.Context, feed *model.Feed) error {
 	var (
 		token       string

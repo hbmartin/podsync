@@ -98,8 +98,8 @@ func TestResolveHandle(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.expected, channelID)
 
-			// The lookup must use the cheap channels.list forHandle call (~1 unit),
-			// not the 100-unit search.list call.
+			// The lookup must use channels.list forHandle, not the search.list
+			// endpoint with its separate daily limit.
 			require.Len(t, transport.requests, 1)
 			query := transport.requests[0].URL.Query()
 			require.Equal(t, tt.handle, query.Get("forHandle"))
@@ -236,10 +236,10 @@ func TestQuotaCost(t *testing.T) {
 		want  float64
 	}{
 		{name: "handle lookup (id only)", parts: []string{"id"}, want: 1},
-		{name: "channel metadata", parts: []string{"id", "snippet", "contentDetails"}, want: 5},
-		{name: "channel statistics", parts: []string{"id", "statistics"}, want: 3},
-		{name: "playlist snippet", parts: []string{"id", "snippet"}, want: 3},
-		{name: "video descriptions", parts: []string{"id", "snippet", "contentDetails"}, want: 5},
+		{name: "channel metadata", parts: []string{"id", "snippet", "contentDetails"}, want: 1},
+		{name: "channel statistics", parts: []string{"id", "statistics"}, want: 1},
+		{name: "playlist snippet", parts: []string{"id", "snippet"}, want: 1},
+		{name: "video descriptions", parts: []string{"id", "snippet", "contentDetails"}, want: 1},
 	}
 
 	for _, tt := range tests {
@@ -270,7 +270,7 @@ func TestRecordAPIReportsQuotaAndRequests(t *testing.T) {
 	yt.recordAPI([]string{"id", "snippet", "contentDetails"}, nil)
 	yt.recordAPI([]string{"id"}, assert.AnError)
 
-	require.Equal(t, float64(6), rec.quota) // 5 + 1
+	require.Equal(t, float64(2), rec.quota) // 1 + 1
 	require.Equal(t, 2, rec.requests)
 	require.Equal(t, 1, rec.failures)
 

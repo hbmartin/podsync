@@ -218,6 +218,81 @@ func TestFetchEpisodes_Filters(t *testing.T) {
 	require.Equal(t, "1", list[0].ID)
 }
 
+func TestEpisodePath_UsesForwardSlashStorageKeys(t *testing.T) {
+	require.Equal(t, "feed1/episode.mp4", episodePath("feed1", "episode.mp4"))
+	require.Equal(t, "feed1/sidecars/episode.vtt", episodePath("feed1/", "/sidecars/episode.vtt"))
+	require.NotContains(t, episodePath("feed1", "episode.mp4"), `\`)
+}
+
+func TestDownloadEpisode_Outcomes(t *testing.T) {
+	t.Run("already on disk", func(t *testing.T) {
+		episode := &model.Episode{ID: "1", Status: model.EpisodeNew}
+		db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+		cfg := &feed.Config{ID: "feed1", PageSize: 50}
+		fs := &testFS{files: map[string][]byte{
+			episodePath("feed1", feed.EpisodeName(cfg, episode)): []byte("existing content"),
+		}}
+		dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+			t.Fatal("downloader must not be called for episodes already on disk")
+			return nil, nil
+		}}
+
+		manager := newTestManager(t, db, fs, dl)
+		outcome, err := manager.downloadEpisode(context.Background(), cfg, episode, 0)
+		require.NoError(t, err)
+		require.Equal(t, episodeDownloadSkipped, outcome)
+		require.Equal(t, model.EpisodeDownloaded, episode.Status)
+		require.Equal(t, int64(len("existing content")), episode.Size)
+	})
+
+	t.Run("downloaded", func(t *testing.T) {
+		episode := &model.Episode{ID: "1", Status: model.EpisodeNew}
+		db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+		cfg := &feed.Config{ID: "feed1", PageSize: 50}
+		fs := &testFS{}
+		dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("episode data")), nil
+		}}
+
+		manager := newTestManager(t, db, fs, dl)
+		outcome, err := manager.downloadEpisode(context.Background(), cfg, episode, 0)
+		require.NoError(t, err)
+		require.Equal(t, episodeDownloadDownloaded, outcome)
+		require.Equal(t, model.EpisodeDownloaded, episode.Status)
+		require.Equal(t, []string{episodePath("feed1", feed.EpisodeName(cfg, episode))}, fs.created)
+	})
+
+	t.Run("download error", func(t *testing.T) {
+		episode := &model.Episode{ID: "1", Status: model.EpisodeNew}
+		db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+		cfg := &feed.Config{ID: "feed1", PageSize: 50}
+		dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+			return nil, errors.New("video is unavailable")
+		}}
+
+		manager := newTestManager(t, db, &testFS{}, dl)
+		outcome, err := manager.downloadEpisode(context.Background(), cfg, episode, 0)
+		require.NoError(t, err)
+		require.Equal(t, episodeDownloadErrored, outcome)
+		require.Equal(t, model.EpisodeError, episode.Status)
+	})
+
+	t.Run("rate limited", func(t *testing.T) {
+		episode := &model.Episode{ID: "1", Status: model.EpisodeNew}
+		db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}
+		cfg := &feed.Config{ID: "feed1", PageSize: 50}
+		dl := &testDownloader{t: t, download: func(context.Context, *feed.Config, *model.Episode) (io.ReadCloser, error) {
+			return nil, ytdl.ErrTooManyRequests
+		}}
+
+		manager := newTestManager(t, db, &testFS{}, dl)
+		outcome, err := manager.downloadEpisode(context.Background(), cfg, episode, 0)
+		require.NoError(t, err)
+		require.Equal(t, episodeDownloadRateLimited, outcome)
+		require.Equal(t, model.EpisodeNew, episode.Status)
+	})
+}
+
 func TestDownloadEpisodes_AlreadyOnDisk(t *testing.T) {
 	episode := &model.Episode{ID: "1", Status: model.EpisodeNew}
 	db := &testDB{episodes: map[string][]*model.Episode{"feed1": {episode}}}

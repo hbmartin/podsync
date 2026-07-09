@@ -131,6 +131,44 @@ func TestOpenAITranscribeError(t *testing.T) {
 	assert.Contains(t, err.Error(), "429")
 }
 
+func TestNewOpenAIValidationAndBaseURLNormalization(t *testing.T) {
+	_, err := newOpenAI(&feed.STTProviderConfig{Model: "whisper-1"}, DefaultTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base_url is required")
+
+	_, err = newOpenAI(&feed.STTProviderConfig{BaseURL: "https://api.example.test/v1/"}, DefaultTimeout)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model is required")
+
+	provider, err := newOpenAI(&feed.STTProviderConfig{
+		BaseURL: "https://api.example.test/v1/",
+		Model:   "whisper-1",
+	}, DefaultTimeout)
+	require.NoError(t, err)
+
+	openAIProvider, ok := provider.(*openAI)
+	require.True(t, ok)
+	assert.Equal(t, "https://api.example.test/v1", openAIProvider.baseURL)
+}
+
+func TestOpenAIVTTFromJSONResponseTextOnly(t *testing.T) {
+	vtt, err := vttFromJSONResponse([]byte(`{"text": " Plain text transcript "}`))
+	require.NoError(t, err)
+
+	assert.Equal(t, "WEBVTT\n\n00:00:00.000 --> 00:00:00.000\nPlain text transcript\n", vtt)
+}
+
+func TestOpenAIVTTFromJSONResponseRejectsEmptyText(t *testing.T) {
+	_, err := vttFromJSONResponse([]byte(`{"text": "   "}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty transcription response")
+}
+
+func TestOpenAITruncate(t *testing.T) {
+	assert.Equal(t, "short", truncate("short", 10))
+	assert.Equal(t, "abc...", truncate("abcdef", 3))
+}
+
 func TestCommandProvider(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires /bin/sh")

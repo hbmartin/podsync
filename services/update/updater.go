@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -47,6 +48,15 @@ type Manager struct {
 	keys       map[model.Provider]feed.KeyProvider
 	metrics    *metrics.Metrics
 }
+
+type episodeDownloadOutcome int
+
+const (
+	episodeDownloadSkipped episodeDownloadOutcome = iota
+	episodeDownloadDownloaded
+	episodeDownloadErrored
+	episodeDownloadRateLimited
+)
 
 func NewUpdater(
 	feeds map[string]*feed.Config,
@@ -235,7 +245,6 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 	var (
 		downloadCount = len(downloadList)
 		downloaded    = 0
-		feedID        = feedConfig.ID
 	)
 
 	if downloadCount > 0 {
@@ -245,155 +254,151 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		return nil
 	}
 
-	// Download pending episodes
-
 	for idx, episode := range downloadList {
-		var (
-			logger      = log.WithFields(log.Fields{"index": idx, "episode_id": episode.ID})
-			episodeName = feed.EpisodeName(feedConfig, episode)
-		)
-
-		// Check whether episode already exists
-		size, err := u.fs.Size(ctx, fmt.Sprintf("%s/%s", feedID, episodeName))
-		if err == nil {
-			logger.Infof("episode %q already exists on disk", episode.ID)
-
-			// File already exists, update file status and disk size
-			if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
-				episode.Size = size
-				episode.Status = model.EpisodeDownloaded
-				return nil
-			}); err != nil {
-				logger.WithError(err).Error("failed to update file info")
-				return err
-			}
-
-			continue
-		} else if os.IsNotExist(err) {
-			// Will download, do nothing here
-		} else {
-			logger.WithError(err).Error("failed to stat file")
+		outcome, err := u.downloadEpisode(ctx, feedConfig, episode, idx)
+		if err != nil {
 			return err
 		}
 
-		// Download episode to disk
-		// We download the episode to a temp directory first to avoid downloading this file by clients
-		// while still being processed by youtube-dl (e.g. a file is being downloaded from YT or encoding in progress)
-
-		logger.Infof("! downloading episode %s", episode.VideoURL)
-		downloadStarted := time.Now()
-		result, err := u.downloader.Download(ctx, feedConfig, episode, downloadOptions(feedConfig))
-		downloadElapsed := time.Since(downloadStarted)
-		if err != nil {
-			// YouTube might block host with HTTP Error 429: Too Many Requests
-			// We still need to generate XML, so just stop sending download requests and
-			// retry next time
-			if err == ytdl.ErrTooManyRequests {
-				u.metrics.EpisodeDownloaded(feedID, metrics.ResultRateLimited, downloadElapsed)
-				logger.Warn("server responded with a 'Too Many Requests' error")
-				break
-			}
-
-			u.metrics.EpisodeDownloaded(feedID, metrics.ResultError, downloadElapsed)
-
-			// Execute episode download error hooks
-			if len(feedConfig.OnEpisodeDownloadError) > 0 {
-				env := []string{
-					"FEED_NAME=" + feedID,
-					"EPISODE_TITLE=" + episode.Title,
-					"ERROR_MESSAGE=" + err.Error(),
-				}
-
-				for i, hook := range feedConfig.OnEpisodeDownloadError {
-					if hookErr := hook.Invoke(ctx, env); hookErr != nil {
-						logger.Errorf("failed to execute episode download error hook %d: %v", i+1, hookErr)
-					} else {
-						logger.Infof("episode download error hook %d executed successfully", i+1)
-					}
-				}
-			}
-
-			if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
-				episode.Status = model.EpisodeError
-				return nil
-			}); err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		u.metrics.EpisodeDownloaded(feedID, metrics.ResultSuccess, downloadElapsed)
-
-		// Enrich the episode with transcripts and chapters before copying,
-		// since chapter embedding modifies the media file in place. This is
-		// best effort: failures are logged and the episode is published
-		// without the missing pieces (enrichment is attempted exactly once).
-		var enrichment *model.EpisodeEnrichment
-		var sidecars []string
-		if u.enricher != nil {
-			enrichResult, enrichErr := u.enricher.Enrich(ctx, u.enrichRequest(feedConfig, episode, result))
-			if enrichErr != nil {
-				logger.WithError(enrichErr).Warn("episode enrichment incomplete")
-			}
-			u.recordEnrichment(feedConfig, enrichResult, enrichErr)
-			enrichment = enrichResult.Enrichment()
-			sidecars = enrichResult.LocalFiles()
-		}
-
-		logger.Debug("copying file")
-		mediaFile, err := result.Open()
-		if err != nil {
-			result.Close()
-			logger.WithError(err).Error("failed to open downloaded file")
-			return err
-		}
-
-		fileSize, err := u.fs.Create(ctx, fmt.Sprintf("%s/%s", feedID, episodeName), mediaFile)
-		mediaFile.Close()
-		if err != nil {
-			result.Close()
-			logger.WithError(err).Error("failed to copy file")
-			return err
-		}
-
-		enrichment = u.copySidecars(ctx, feedID, sidecars, enrichment, logger)
-		result.Close()
-
-		// Execute post episode download hooks
-		if len(feedConfig.PostEpisodeDownload) > 0 {
-			env := []string{
-				"EPISODE_FILE=" + fmt.Sprintf("%s/%s", feedID, episodeName),
-				"FEED_NAME=" + feedID,
-				"EPISODE_TITLE=" + episode.Title,
-			}
-
-			for i, hook := range feedConfig.PostEpisodeDownload {
-				if err := hook.Invoke(ctx, env); err != nil {
-					logger.Errorf("failed to execute post episode download hook %d: %v", i+1, err)
-				} else {
-					logger.Infof("post episode download hook %d executed successfully", i+1)
-				}
-			}
-		}
-
-		// Update file status in database
-
-		logger.Infof("successfully downloaded file %q", episode.ID)
-		if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
-			episode.Size = fileSize
-			episode.Status = model.EpisodeDownloaded
-			episode.Enrichment = enrichment
+		switch outcome {
+		case episodeDownloadDownloaded:
+			downloaded++
+		case episodeDownloadRateLimited:
+			log.Infof("downloaded %d episode(s)", downloaded)
 			return nil
-		}); err != nil {
-			return err
 		}
-
-		downloaded++
 	}
 
 	log.Infof("downloaded %d episode(s)", downloaded)
 	return nil
+}
+
+func (u *Manager) downloadEpisode(ctx context.Context, feedConfig *feed.Config, episode *model.Episode, idx int) (episodeDownloadOutcome, error) {
+	var (
+		feedID      = feedConfig.ID
+		logger      = log.WithFields(log.Fields{"index": idx, "episode_id": episode.ID})
+		episodeName = feed.EpisodeName(feedConfig, episode)
+		storagePath = episodePath(feedID, episodeName)
+	)
+
+	size, err := u.fs.Size(ctx, storagePath)
+	if err == nil {
+		logger.Infof("episode %q already exists on disk", episode.ID)
+
+		if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
+			episode.Size = size
+			episode.Status = model.EpisodeDownloaded
+			return nil
+		}); err != nil {
+			logger.WithError(err).Error("failed to update file info")
+			return episodeDownloadSkipped, err
+		}
+
+		return episodeDownloadSkipped, nil
+	} else if !os.IsNotExist(err) {
+		logger.WithError(err).Error("failed to stat file")
+		return episodeDownloadSkipped, err
+	}
+
+	// Download to a temp directory first, so clients never see a partial file
+	// while youtube-dl is still downloading or encoding it.
+	logger.Infof("! downloading episode %s", episode.VideoURL)
+	downloadStarted := time.Now()
+	result, err := u.downloader.Download(ctx, feedConfig, episode, downloadOptions(feedConfig))
+	downloadElapsed := time.Since(downloadStarted)
+	if err != nil {
+		// YouTube might block host with HTTP Error 429: Too Many Requests. We
+		// still need to generate XML, so stop sending download requests and
+		// retry next time.
+		if err == ytdl.ErrTooManyRequests {
+			u.metrics.EpisodeDownloaded(feedID, metrics.ResultRateLimited, downloadElapsed)
+			logger.Warn("server responded with a 'Too Many Requests' error")
+			return episodeDownloadRateLimited, nil
+		}
+
+		u.metrics.EpisodeDownloaded(feedID, metrics.ResultError, downloadElapsed)
+		runEpisodeHooks(ctx, logger, "episode download error", feedConfig.OnEpisodeDownloadError, []string{
+			"FEED_NAME=" + feedID,
+			"EPISODE_TITLE=" + episode.Title,
+			"ERROR_MESSAGE=" + err.Error(),
+		})
+
+		if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
+			episode.Status = model.EpisodeError
+			return nil
+		}); err != nil {
+			return episodeDownloadErrored, err
+		}
+
+		return episodeDownloadErrored, nil
+	}
+	defer result.Close()
+
+	u.metrics.EpisodeDownloaded(feedID, metrics.ResultSuccess, downloadElapsed)
+
+	// Enrich the episode with transcripts and chapters before copying, since
+	// chapter embedding modifies the media file in place. This is best effort:
+	// failures are logged and the episode is published without the missing
+	// pieces (enrichment is attempted exactly once).
+	var enrichment *model.EpisodeEnrichment
+	var sidecars []string
+	if u.enricher != nil {
+		enrichResult, enrichErr := u.enricher.Enrich(ctx, u.enrichRequest(feedConfig, episode, result))
+		if enrichErr != nil {
+			logger.WithError(enrichErr).Warn("episode enrichment incomplete")
+		}
+		u.recordEnrichment(feedConfig, enrichResult, enrichErr)
+		enrichment = enrichResult.Enrichment()
+		sidecars = enrichResult.LocalFiles()
+	}
+
+	logger.Debug("copying file")
+	mediaFile, err := result.Open()
+	if err != nil {
+		logger.WithError(err).Error("failed to open downloaded file")
+		return episodeDownloadSkipped, err
+	}
+
+	fileSize, err := u.fs.Create(ctx, storagePath, mediaFile)
+	mediaFile.Close()
+	if err != nil {
+		logger.WithError(err).Error("failed to copy file")
+		return episodeDownloadSkipped, err
+	}
+
+	enrichment = u.copySidecars(ctx, feedID, sidecars, enrichment, logger)
+
+	runEpisodeHooks(ctx, logger, "post episode download", feedConfig.PostEpisodeDownload, []string{
+		"EPISODE_FILE=" + storagePath,
+		"FEED_NAME=" + feedID,
+		"EPISODE_TITLE=" + episode.Title,
+	})
+
+	logger.Infof("successfully downloaded file %q", episode.ID)
+	if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
+		episode.Size = fileSize
+		episode.Status = model.EpisodeDownloaded
+		episode.Enrichment = enrichment
+		return nil
+	}); err != nil {
+		return episodeDownloadSkipped, err
+	}
+
+	return episodeDownloadDownloaded, nil
+}
+
+func episodePath(feedID, name string) string {
+	return path.Join(feedID, name)
+}
+
+func runEpisodeHooks(ctx context.Context, logger *log.Entry, label string, hooks []*feed.ExecHook, env []string) {
+	for i, hook := range hooks {
+		if err := hook.Invoke(ctx, env); err != nil {
+			logger.Errorf("failed to execute %s hook %d: %v", label, i+1, err)
+		} else {
+			logger.Infof("%s hook %d executed successfully", label, i+1)
+		}
+	}
 }
 
 // downloadOptions derives yt-dlp sidecar/embedding options from the feed's
@@ -494,7 +499,7 @@ func (u *Manager) copySidecars(ctx context.Context, feedID string, sidecars []st
 			continue
 		}
 
-		_, err = u.fs.Create(ctx, fmt.Sprintf("%s/%s", feedID, name), f)
+		_, err = u.fs.Create(ctx, episodePath(feedID, name), f)
 		f.Close()
 		if err != nil {
 			logger.WithError(err).Errorf("failed to copy sidecar file %q", name)
@@ -620,7 +625,7 @@ func (u *Manager) cleanup(ctx context.Context, feedConfig *feed.Config) error {
 
 		var (
 			episodeName = feed.EpisodeName(feedConfig, episode)
-			path        = fmt.Sprintf("%s/%s", feedConfig.ID, episodeName)
+			path        = episodePath(feedConfig.ID, episodeName)
 		)
 
 		err := u.fs.Delete(ctx, path)
@@ -636,7 +641,7 @@ func (u *Manager) cleanup(ctx context.Context, feedConfig *feed.Config) error {
 
 		// Delete transcript/chapter sidecar files along with the media
 		for _, sidecar := range episode.Enrichment.SidecarFiles() {
-			sidecarPath := fmt.Sprintf("%s/%s", feedConfig.ID, sidecar)
+			sidecarPath := episodePath(feedConfig.ID, sidecar)
 			if err := u.fs.Delete(ctx, sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				logger.WithError(err).Errorf("failed to delete sidecar file: %s", sidecarPath)
 				result = multierror.Append(result, errors.Wrapf(err, "failed to delete sidecar: %s", sidecarPath))

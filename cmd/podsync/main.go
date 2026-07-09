@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,6 +55,29 @@ var (
 	date    = "unknown"
 	arch    = ""
 )
+
+type updateRunner interface {
+	Update(ctx context.Context, feedConfig *feed.Config) error
+}
+
+type serviceServer interface {
+	ListenAndServe() error
+	ListenAndServeTLS(certFile, keyFile string) error
+	Shutdown(ctx context.Context) error
+}
+
+type serviceConfig struct {
+	Feeds           map[string]*feed.Config
+	Manager         updateRunner
+	Metrics         *metrics.Metrics
+	Server          serviceServer
+	ServerAddr      string
+	TLS             bool
+	CertificatePath string
+	KeyFilePath     string
+	Stop            <-chan os.Signal
+	QueueSize       int
+}
 
 func main() {
 	log.SetFormatter(&log.TextFormatter{
@@ -214,32 +238,79 @@ func main() {
 		return
 	}
 
-	// Queue of feeds to update
-	updates := make(chan *feed.Config, 16)
-	defer close(updates)
+	var srv serviceServer
+	var srvAddr string
+	if cfg.Storage.Type != "s3" {
+		// Run web server. S3 content is hosted externally, so there is no
+		// local media server in that mode.
+		webServer := web.New(cfg.Server, storage, database, metricsCollector)
+		srv = webServer
+		srvAddr = webServer.Addr
+	}
 
+	if err := runService(ctx, serviceConfig{
+		Feeds:           cfg.Feeds,
+		Manager:         manager,
+		Metrics:         metricsCollector,
+		Server:          srv,
+		ServerAddr:      srvAddr,
+		TLS:             cfg.Server.TLS,
+		CertificatePath: cfg.Server.CertificatePath,
+		KeyFilePath:     cfg.Server.KeyFilePath,
+		Stop:            stop,
+	}); err != nil && (err != context.Canceled && err != http.ErrServerClosed) {
+		log.WithError(err).Error("wait error")
+	}
+	log.Info("gracefully stopped")
+}
+
+func runService(parent context.Context, cfg serviceConfig) error {
+	if cfg.Manager == nil {
+		return fmt.Errorf("update manager is required")
+	}
+
+	queueSize := cfg.QueueSize
+	if queueSize == 0 {
+		queueSize = 16
+	}
+
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	updates := make(chan *feed.Config, queueSize)
 	group, ctx := errgroup.WithContext(ctx)
-	defer func() {
-		if err := group.Wait(); err != nil && (err != context.Canceled && err != http.ErrServerClosed) {
-			log.WithError(err).Error("wait error")
-		}
-		log.Info("gracefully stopped")
-	}()
 
-	// Create Cron
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)))
-	m := make(map[string]cron.EntryID)
+	entries := make(map[string]cron.EntryID)
+	var entriesMu sync.RWMutex
 
-	// Run updates listener
+	nextUpdate := func(feedID string) time.Time {
+		entriesMu.RLock()
+		entryID := entries[feedID]
+		entriesMu.RUnlock()
+		if entryID == 0 {
+			return time.Time{}
+		}
+		return c.Entry(entryID).Next
+	}
+
+	enqueue := func(feedConfig *feed.Config) {
+		select {
+		case updates <- feedConfig:
+			cfg.Metrics.SetQueueDepth(len(updates))
+		case <-ctx.Done():
+		}
+	}
+
 	group.Go(func() error {
 		for {
 			select {
-			case _feed := <-updates:
-				metricsCollector.SetQueueDepth(len(updates))
-				if err := manager.Update(ctx, _feed); err != nil {
-					log.WithError(err).Errorf("failed to update feed: %s", _feed.URL)
-				} else {
-					log.Infof("next update of %s: %s", _feed.ID, c.Entry(m[_feed.ID]).Next)
+			case feedConfig := <-updates:
+				cfg.Metrics.SetQueueDepth(len(updates))
+				if err := cfg.Manager.Update(ctx, feedConfig); err != nil {
+					log.WithError(err).Errorf("failed to update feed: %s", feedConfig.URL)
+				} else if next := nextUpdate(feedConfig.ID); !next.IsZero() {
+					log.Infof("next update of %s: %s", feedConfig.ID, next)
 				}
 			case <-ctx.Done():
 				return ctx.Err()
@@ -247,86 +318,80 @@ func main() {
 		}
 	})
 
-	// Run cron scheduler
 	group.Go(func() error {
 		var cronID cron.EntryID
 
-		for _, _feed := range cfg.Feeds {
-			// Track if this feed has an explicit cron schedule
-			hasExplicitCronSchedule := _feed.CronSchedule != ""
+		for _, feedConfig := range cfg.Feeds {
+			// Track if this feed has an explicit cron schedule.
+			hasExplicitCronSchedule := feedConfig.CronSchedule != ""
 
-			if _feed.CronSchedule == "" {
-				_feed.CronSchedule = fmt.Sprintf("@every %s", _feed.UpdatePeriod.String())
+			if feedConfig.CronSchedule == "" {
+				feedConfig.CronSchedule = fmt.Sprintf("@every %s", feedConfig.UpdatePeriod.String())
 			}
-			cronFeed := _feed
+			cronFeed := feedConfig
+			var err error
 			if cronID, err = c.AddFunc(cronFeed.CronSchedule, func() {
 				log.Debugf("adding %q to update queue", cronFeed.ID)
-				updates <- cronFeed
-				metricsCollector.SetQueueDepth(len(updates))
+				enqueue(cronFeed)
 			}); err != nil {
-				log.WithError(err).Fatalf("can't create cron task for feed: %s", cronFeed.ID)
+				return fmt.Errorf("can't create cron task for feed %s: %w", cronFeed.ID, err)
 			}
 
-			m[cronFeed.ID] = cronID
+			entriesMu.Lock()
+			entries[cronFeed.ID] = cronID
+			entriesMu.Unlock()
 			log.Debugf("-> %s (update '%s')", cronFeed.ID, cronFeed.CronSchedule)
 
-			// Only perform initial update if no explicit cron schedule is configured
-			// This prevents unwanted updates when using fixed schedules in Docker deployments
+			// Only perform initial update if no explicit cron schedule is configured.
+			// This prevents unwanted updates when using fixed schedules in Docker deployments.
 			if !hasExplicitCronSchedule {
-				updates <- cronFeed
-				metricsCollector.SetQueueDepth(len(updates))
+				enqueue(cronFeed)
 			}
 		}
 
 		c.Start()
 
-		for {
-			<-ctx.Done()
+		<-ctx.Done()
 
-			log.Info("shutting down cron")
-			c.Stop()
+		log.Info("shutting down cron")
+		<-c.Stop().Done()
 
-			return ctx.Err()
-		}
+		return ctx.Err()
 	})
 
-	if cfg.Storage.Type == "s3" {
-		return // S3 content is hosted externally
+	if cfg.Server != nil {
+		group.Go(func() error {
+			log.Infof("running listener at %s", cfg.ServerAddr)
+			if cfg.TLS {
+				return cfg.Server.ListenAndServeTLS(cfg.CertificatePath, cfg.KeyFilePath)
+			}
+			return cfg.Server.ListenAndServe()
+		})
 	}
 
-	// Run web server
-	srv := web.New(cfg.Server, storage, database, metricsCollector)
-
 	group.Go(func() error {
-		log.Infof("running listener at %s", srv.Addr)
-		if cfg.Server.TLS {
-			return srv.ListenAndServeTLS(cfg.Server.CertificatePath, cfg.Server.KeyFilePath)
-		} else {
-			return srv.ListenAndServe()
-		}
-	})
-
-	group.Go(func() error {
-		// Shutdown web server
 		defer func() {
-			ctxShutDown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer func() {
-				cancel()
-			}()
+			if cfg.Server == nil {
+				return
+			}
+
+			ctxShutDown, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+
 			log.Info("shutting down web server")
-			if err := srv.Shutdown(ctxShutDown); err != nil {
+			if err := cfg.Server.Shutdown(ctxShutDown); err != nil {
 				log.WithError(err).Error("server shutdown failed")
 			}
 		}()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-stop:
-				cancel()
-				return nil
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-cfg.Stop:
+			cancel()
+			return nil
 		}
 	})
+
+	return group.Wait()
 }

@@ -201,8 +201,7 @@ func (dl *YoutubeDl) PlaylistMetadata(ctx context.Context, url string) (metadata
 
 	var playlistMetadata PlaylistMetadata
 	if err := json.Unmarshal([]byte(output), &playlistMetadata); err != nil {
-		log.WithError(err).Errorf("failed to parse youtube-dl metadata: %s", url)
-		return PlaylistMetadata{}, err
+		return PlaylistMetadata{}, errors.Wrapf(err, "failed to parse youtube-dl metadata for %s", url)
 	}
 	return playlistMetadata, nil
 }

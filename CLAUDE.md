@@ -397,6 +397,7 @@ endpoint behind a trusted network/reverse proxy.
 ### Local Storage
 - Files stored in `{data_dir}/{feed_id}/{episode_name}`
 - Web UI served from `./html/index.html` if enabled
+- Web UI episode artwork: item-level `itunes:image` (matched via `getElementsByTagName`, since `querySelector` cannot match XML namespace prefixes), falling back to channel `itunes:image`, then channel `<image><url>`; parsing logic covered by `html/index.test.js`
 
 ### S3 Storage
 - Files stored with key: `{prefix}/{feed_id}/{episode_name}`
@@ -480,6 +481,7 @@ make                # Build and run tests
 make test           # Run all unit tests
 go test -v ./...    # Run tests with verbose output
 go test ./pkg/...   # Test specific packages
+node --test html/index.test.js  # Web UI RSS-parsing tests (Node 22+, also run in CI)
 ```
 
 ### Linting and Formatting

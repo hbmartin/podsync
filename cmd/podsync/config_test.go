@@ -546,7 +546,7 @@ func TestEnrichmentConfig(t *testing.T) {
 data_dir = "/data"
 
 [tools]
-transcript2json = "/opt/bin/transcript2json"
+video_to_chapters = "/opt/bin/video-to-chapters"
 
 [transcripts]
 languages = ["de", "en"]
@@ -580,7 +580,7 @@ gemini_api_key = "gem"
 	config, err := LoadConfig(path)
 	require.NoError(t, err)
 
-	assert.Equal(t, "/opt/bin/transcript2json", config.Tools.Transcript2JSON)
+	assert.Equal(t, "/opt/bin/video-to-chapters", config.Tools.VideoToChapters)
 
 	// Feed A inherits the global sections
 	feedA := config.Feeds["A"]

@@ -31,12 +31,11 @@ RUN apk --no-cache add \
     gcompat=1.1.0-r4 \
     deno=2.7.4-r2
 
-# Optional transcript/chapter helper tools (features degrade gracefully
-# without them, but the image ships with the full experience)
+# Optional AI chapter generation helper (features degrade gracefully without
+# it). Transcript conversion and description chapter parsing are handled
+# in-process by the podcast-rss-generator Go library, so they need no tools.
 ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin
-RUN pipx install podcast-transcript-convert==0.2.0 || echo "WARN: podcast-transcript-convert install failed, using built-in converter"; \
-    pipx install podcast-chapter-tools==0.2.0 || echo "WARN: podcast-chapter-tools install failed, using built-in parser"; \
-    pipx install video-to-chapters-with-transcript==0.1.0 || echo "WARN: video-to-chapters-with-transcript install failed, AI chapters unavailable"
+RUN pipx install video-to-chapters-with-transcript==0.1.0 || echo "WARN: video-to-chapters-with-transcript install failed, AI chapters unavailable"
 
 RUN chmod 777 /usr/local/bin
 COPY --from=builder /usr/bin/yt-dlp /usr/local/bin/youtube-dl

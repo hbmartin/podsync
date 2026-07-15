@@ -11,7 +11,7 @@ require (
 	github.com/gilliek/go-opml v1.0.0
 	github.com/golang/mock v1.6.0
 	github.com/hashicorp/go-multierror v1.1.1
-	github.com/hbmartin/podcast-rss-generator/v2 v2.0.0
+	github.com/hbmartin/podcast-rss-generator/v2 v2.1.0
 	github.com/jessevdk/go-flags v1.6.1
 	github.com/nicklaw5/helix v1.25.0
 	github.com/pelletier/go-toml v1.9.5
@@ -38,6 +38,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgraph-io/ristretto v0.0.2 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

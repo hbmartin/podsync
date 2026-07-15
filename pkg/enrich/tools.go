@@ -17,9 +17,11 @@ const helperTimeout = 30 * time.Minute
 // Toolset holds the resolved paths of the optional external helper tools.
 // An empty field means the tool is unavailable; the corresponding feature
 // degrades gracefully.
+//
+// Transcript conversion and description chapter parsing no longer shell out
+// to external tools: they use the github.com/hbmartin/podcast-rss-generator/v2
+// transcript and chapters packages directly.
 type Toolset struct {
-	Transcript2JSON string
-	PodcastChapters string
 	VideoToChapters string
 	FFmpeg          string
 }
@@ -30,8 +32,6 @@ func ResolveTools(cfg feed.ToolsConfig) Toolset {
 	cfg.ApplyDefaults()
 
 	tools := Toolset{
-		Transcript2JSON: resolveBinary(cfg.Transcript2JSON),
-		PodcastChapters: resolveBinary(cfg.PodcastChapters),
 		VideoToChapters: resolveBinary(cfg.VideoToChapters),
 		FFmpeg:          resolveBinary(cfg.FFmpeg),
 	}
@@ -44,8 +44,6 @@ func ResolveTools(cfg feed.ToolsConfig) Toolset {
 		}
 	}
 
-	logTool("transcript2json", tools.Transcript2JSON, "will use built-in VTT to transcript JSON conversion")
-	logTool("podcast-chapters", tools.PodcastChapters, "will use built-in description chapter parsing")
 	logTool("video-to-chapters-with-transcript", tools.VideoToChapters, "AI chapter generation is unavailable")
 	logTool("ffmpeg", tools.FFmpeg, "chapter images and MP4 chapter embedding are unavailable")
 

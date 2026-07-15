@@ -77,9 +77,9 @@ var descriptionTimestampPattern = regexp.MustCompile(
 
 // ParseDescriptionChapters extracts a chapter list from timestamp lines in
 // an episode description. It is the built-in fallback used when the
-// podcast-chapters helper tool is unavailable. Returns nil unless at least
-// two increasing timestamps are found and the first chapter starts at 0:00
-// (the convention used by video platforms).
+// podcast-rss-generator chapters package finds none. Returns nil unless at
+// least two increasing timestamps are found and the first chapter starts at
+// 0:00 (the convention used by video platforms).
 func ParseDescriptionChapters(description string) []Chapter {
 	lines := strings.Split(description, "\n")
 	chapters := make([]Chapter, 0, len(lines))

@@ -1,16 +1,15 @@
 package feed
 
 // ToolsConfig points to the optional external helper binaries used for
-// transcript and chapter processing. Values default to the bare command
-// names, resolved via PATH. Missing tools disable the corresponding
-// functionality with a logged warning instead of failing.
+// chapter processing. Values default to the bare command names, resolved via
+// PATH. Missing tools disable the corresponding functionality with a logged
+// warning instead of failing.
+//
+// Transcript conversion (VTT to PodcastIndex JSON) and description chapter
+// parsing are handled in-process by the
+// github.com/hbmartin/podcast-rss-generator/v2 transcript and chapters
+// packages, so they have no external tool configuration.
 type ToolsConfig struct {
-	// Transcript2JSON is the CLI of hbmartin/podcast-transcript-convert,
-	// used to convert VTT subtitles to PodcastIndex JSON transcripts.
-	Transcript2JSON string `toml:"transcript2json"`
-	// PodcastChapters is the CLI of hbmartin/podcast-chapter-tools,
-	// used to parse chapter timestamps out of episode descriptions.
-	PodcastChapters string `toml:"podcast_chapters"`
 	// VideoToChapters is the CLI of hbmartin/video-to-chapters-with-transcript,
 	// used to generate chapters with an LLM when a video has none.
 	VideoToChapters string `toml:"video_to_chapters"`
@@ -20,12 +19,6 @@ type ToolsConfig struct {
 
 // ApplyDefaults fills unset tool paths with the default command names.
 func (c *ToolsConfig) ApplyDefaults() {
-	if c.Transcript2JSON == "" {
-		c.Transcript2JSON = "transcript2json"
-	}
-	if c.PodcastChapters == "" {
-		c.PodcastChapters = "podcast-chapters"
-	}
 	if c.VideoToChapters == "" {
 		c.VideoToChapters = "video-to-chapters-with-transcript"
 	}

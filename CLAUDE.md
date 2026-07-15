@@ -54,8 +54,8 @@ Understanding how episodes flow through the system:
 ### Enrichment Phase (transcripts + chapters)
 - Runs after a successful download, BEFORE the media file is copied to storage (chapter embedding mutates the file in place); see `pkg/enrich`
 - **Best-effort and attempted exactly once**: failures are logged and the episode is published without the missing pieces; there is NO retry of enrichment, and NO backfill of episodes downloaded before the feature existed
-- Transcript chain: platform subtitles (uploaded preferred, auto-captions fallback, language list from `transcripts.languages` → `custom.lang` → `en`) → ordered STT chain (`[[transcripts.stt]]`: `openai` (OpenAI-compatible API), `whisper_cpp`, `command`); output is `<base>.vtt` + `<base>.transcript.json` (PodcastIndex JSON, via `transcript2json` tool or built-in converter in `pkg/enrich/vtt.go`)
-- Chapter chain (cheapest first): platform chapters from `.info.json` → description timestamp lists (`podcast-chapters` tool or built-in parser in `pkg/enrich/chapters.go`) → LLM generation via `video-to-chapters-with-transcript` (runs automatically when AssemblyAI + Gemini keys are configured)
+- Transcript chain: platform subtitles (uploaded preferred, auto-captions fallback, language list from `transcripts.languages` → `custom.lang` → `en`) → ordered STT chain (`[[transcripts.stt]]`: `openai` (OpenAI-compatible API), `whisper_cpp`, `command`); output is `<base>.vtt` + `<base>.transcript.json` (PodcastIndex JSON, converted in-process by the `github.com/hbmartin/podcast-rss-generator/v2/transcript` package, with the built-in converter in `pkg/enrich/vtt.go` as fallback)
+- Chapter chain (cheapest first): platform chapters from `.info.json` → description timestamp lists (parsed in-process by the `github.com/hbmartin/podcast-rss-generator/v2/chapters` package, with the built-in parser in `pkg/enrich/chapters.go` as fallback) → LLM generation via `video-to-chapters-with-transcript` (runs automatically when AssemblyAI + Gemini keys are configured)
 - Chapter images: one JPEG frame per chapter (chapter start + 1s, max width `image_max_width`, default 1280) extracted with ffmpeg into `<base>.chapter-NN.jpg`; for audio feeds a temporary low-res video is fetched lazily (at most once per episode) unless `chapters.fetch_video_for_audio = false`
 - Chapter embedding: MP3 gets ID3v2 CHAP/CTOC frames (`pkg/media/id3.go`, bogem/id3v2); MP4 gets container chapters (yt-dlp `--embed-chapters` for platform chapters, ffmpeg remux for generated ones)
 - Sidecar metadata is persisted on `Episode.Enrichment` (file names only); `buildXML` emits tags from it without probing storage
@@ -274,8 +274,9 @@ keep_last = 50                         # Applied to all feeds unless overridden
 ### Transcripts, Chapters and Helper Tools (global)
 ```toml
 [tools]                                # Optional external helpers, resolved from PATH
-transcript2json   = "transcript2json"                    # hbmartin/podcast-transcript-convert
-podcast_chapters  = "podcast-chapters"                   # hbmartin/podcast-chapter-tools
+# Transcript conversion (VTT→PodcastIndex JSON) and description chapter parsing
+# are handled in-process by the github.com/hbmartin/podcast-rss-generator/v2
+# transcript and chapters packages, so they have no [tools] entry.
 video_to_chapters = "video-to-chapters-with-transcript"  # hbmartin/video-to-chapters-with-transcript
 ffmpeg            = "ffmpeg"
 
@@ -460,7 +461,7 @@ Emitted Podcasting 2.0 tags (`pkg/feed/xml.go` `Build`):
 - Enrichment runs exactly once per episode (no retry on failure) and only for NEW downloads — no backfill for episodes downloaded before the feature existed
 - Chapter images inside `<base>.chapters.json` use absolute URLs baked at download time; changing `server.hostname` leaves them stale (feed tags themselves are rebuilt with the new hostname)
 - `--embed-chapters`/ffmpeg cannot write ID3 CHAP frames — MP3 embedding is done natively via bogem/id3v2; custom-format containers other than mp3/mp4/m4a/m4v/mov get no in-file chapters
-- The exact CLI contracts of the three optional helper tools are best-effort (graceful fallback to built-in implementations); `video-to-chapters-with-transcript` requires AssemblyAI + Gemini keys and a local video file
+- Transcript conversion and description chapter parsing are done in-process by the `github.com/hbmartin/podcast-rss-generator/v2` transcript/chapters packages (built-in `pkg/enrich` implementations remain as fallback); the remaining optional external tool `video-to-chapters-with-transcript` requires AssemblyAI + Gemini keys and a local video file
 - STT chain and LLM chapter generation spend API money per episode — they only activate when explicitly configured (keys present)
 
 ### Performance
@@ -601,9 +602,9 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - youtube-dl wrapper: `pkg/ytdl/ytdl.go` (Download/FetchVideo/buildArgs), `pkg/ytdl/download_result.go` (DownloadResult, sidecar discovery)
 - Hooks: `pkg/feed/hooks.go`
 - API key rotation: `pkg/feed/key.go`
-- RSS generation library: `github.com/hbmartin/podcast-rss-generator/v2` used from `pkg/feed/xml.go`
+- RSS generation library: `github.com/hbmartin/podcast-rss-generator/v2` used from `pkg/feed/xml.go` (RSS), and its `transcript` + `chapters` subpackages used from `pkg/enrich/enrich.go` (VTT→PodcastIndex JSON conversion and description chapter parsing)
 - Enrichment orchestrator: `pkg/enrich/enrich.go` (transcript/chapter chains), `pkg/enrich/naming.go` (sidecar names)
-- Built-in converters/parsers: `pkg/enrich/vtt.go` (VTT→PodcastIndex JSON), `pkg/enrich/chapters.go` (info.json/description/flexible chapter parsing)
+- Built-in converters/parsers (fallbacks for the library): `pkg/enrich/vtt.go` (VTT→PodcastIndex JSON), `pkg/enrich/chapters.go` (info.json/description/flexible chapter parsing)
 - STT fallback chain: `pkg/enrich/stt/` (openai.go, whispercpp.go, command.go)
 - Media manipulation: `pkg/media/id3.go` (ID3 CHAP/CTOC), `pkg/media/ffmpeg.go` (frames, MP4 chapters)
 - Enrichment config structs: `pkg/feed/enrich_config.go`

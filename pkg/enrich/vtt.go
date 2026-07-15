@@ -33,8 +33,8 @@ var (
 )
 
 // ConvertVTTToTranscriptJSON converts a WebVTT subtitle file into a
-// PodcastIndex JSON transcript file. It is the built-in fallback used when
-// the transcript2json helper tool is not available.
+// PodcastIndex JSON transcript file. It is the built-in fallback used when the
+// podcast-rss-generator transcript package cannot parse the file.
 func ConvertVTTToTranscriptJSON(vttPath, jsonPath string) error {
 	segments, err := parseVTT(vttPath)
 	if err != nil {

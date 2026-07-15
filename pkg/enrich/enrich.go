@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
+	chaptertools "github.com/hbmartin/podcast-rss-generator/v2/chapters"
+	transcriptconv "github.com/hbmartin/podcast-rss-generator/v2/transcript"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
@@ -155,7 +157,7 @@ func (e *Enricher) transcript(ctx context.Context, req *Request, result *Result)
 	result.TranscriptSource = source
 
 	jsonPath := filepath.Join(req.WorkDir, TranscriptJSONName(req.BaseName))
-	if err := e.convertTranscript(ctx, vttPath, jsonPath); err != nil {
+	if err := convertTranscript(vttPath, jsonPath); err != nil {
 		log.WithError(err).Warn("failed to convert transcript to PodcastIndex JSON, publishing VTT only")
 		return nil
 	}
@@ -237,39 +239,15 @@ func TranscriptLanguages(cfg *feed.Config) []string {
 	return []string{"en"}
 }
 
-// convertTranscript converts VTT to PodcastIndex JSON, preferring the
-// transcript2json helper and falling back to the built-in converter.
-func (e *Enricher) convertTranscript(ctx context.Context, vttPath, jsonPath string) error {
-	if e.tools.Transcript2JSON != "" {
-		err := e.convertTranscriptViaTool(ctx, vttPath, jsonPath)
-		if err == nil {
-			return nil
-		}
-		log.WithError(err).Debug("transcript2json failed, using built-in converter")
+// convertTranscript converts VTT to PodcastIndex JSON using the
+// podcast-rss-generator transcript package, falling back to the built-in
+// converter when the library cannot parse the file.
+func convertTranscript(vttPath, jsonPath string) error {
+	if err := transcriptconv.VTTFileToJSONFile(vttPath, jsonPath, nil); err != nil {
+		log.WithError(err).Debug("library transcript conversion failed, using built-in converter")
+		return ConvertVTTToTranscriptJSON(vttPath, jsonPath)
 	}
-	return ConvertVTTToTranscriptJSON(vttPath, jsonPath)
-}
-
-func (e *Enricher) convertTranscriptViaTool(ctx context.Context, vttPath, jsonPath string) error {
-	output, err := runTool(ctx, nil, e.tools.Transcript2JSON, vttPath)
-	if err != nil {
-		return errors.Wrapf(err, "transcript2json failed: %s", truncateOutput(output))
-	}
-
-	// The tool writes the converted file next to the input.
-	candidates := []string{
-		strings.TrimSuffix(vttPath, filepath.Ext(vttPath)) + ".json",
-		vttPath + ".json",
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && info.Size() > 0 {
-			if candidate == jsonPath {
-				return nil
-			}
-			return os.Rename(candidate, jsonPath)
-		}
-	}
-	return errors.New("transcript2json did not produce an output file")
+	return nil
 }
 
 // --- chapters ---
@@ -318,7 +296,7 @@ func (e *Enricher) findChapters(ctx context.Context, req *Request, video *videoS
 		}
 	}
 
-	if chapters := e.descriptionChapters(ctx, req); len(chapters) > 0 {
+	if chapters := descriptionChapters(req); len(chapters) > 0 {
 		return chapters, SourceDescription
 	}
 
@@ -335,46 +313,39 @@ func (e *Enricher) findChapters(ctx context.Context, req *Request, video *videoS
 }
 
 // descriptionChapters parses chapter timestamps out of the episode
-// description, preferring the podcast-chapters helper tool.
-func (e *Enricher) descriptionChapters(ctx context.Context, req *Request) []Chapter {
+// description using the podcast-rss-generator chapters package, falling back
+// to the built-in parser when the library finds none.
+func descriptionChapters(req *Request) []Chapter {
 	description := req.Episode.Description
 	if strings.TrimSpace(description) == "" {
 		return nil
 	}
 
-	if e.tools.PodcastChapters != "" {
-		chapters, err := e.descriptionChaptersViaTool(ctx, req.WorkDir, description)
-		if err != nil {
-			log.WithError(err).Debug("podcast-chapters failed, using built-in description parser")
-		} else if len(chapters) > 0 {
-			return chapters
-		}
+	if chapters := libraryDescriptionChapters(description); len(chapters) > 0 {
+		return chapters
 	}
 
 	return ParseDescriptionChapters(description)
 }
 
-func (e *Enricher) descriptionChaptersViaTool(ctx context.Context, workDir, description string) ([]Chapter, error) {
-	inputPath := filepath.Join(workDir, "podsync-description.txt")
-	if err := os.WriteFile(inputPath, []byte(description), 0o600); err != nil {
-		return nil, errors.Wrap(err, "failed to write description file")
+// libraryDescriptionChapters extracts chapters from a description with the
+// podcast-rss-generator chapters package and maps them onto the local
+// PodcastIndex Chapter shape (end times are filled in later).
+func libraryDescriptionChapters(description string) []Chapter {
+	extracted := chaptertools.ExtractDescriptionChapters(description, true)
+	if len(extracted) == 0 {
+		return nil
 	}
-	defer os.Remove(inputPath)
-
-	outputPath := filepath.Join(workDir, "podsync-description-chapters.json")
-	defer os.Remove(outputPath)
-
-	output, err := runTool(ctx, nil, e.tools.PodcastChapters,
-		"from-description", inputPath, "--to", "pci", "--output", outputPath)
-	if err != nil {
-		return nil, errors.Wrapf(err, "podcast-chapters failed: %s", truncateOutput(output))
+	chapters := make([]Chapter, 0, len(extracted))
+	for _, chapter := range extracted {
+		chapters = append(chapters, Chapter{
+			StartTime: float64(chapter.Start),
+			Title:     chapter.Title,
+			URL:       chapter.URL,
+			Img:       chapter.Image,
+		})
 	}
-
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		return nil, errors.Wrap(err, "podcast-chapters did not produce an output file")
-	}
-	return parseFlexibleChapters(data)
+	return chapters
 }
 
 // llmChapters generates chapters from the video content using the
